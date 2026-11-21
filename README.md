@@ -12,6 +12,26 @@ PercyScarlett is written from scratch in pure Rust with zero third-party emulato
 
 ---
 
+## Proof of Execution: Codename G6 Readiness
+
+> Full technical breakdown & scanned binary table: **[docs/CODENAME_G6_PROOF.md](docs/CODENAME_G6_PROOF.md)**
+
+PercyScarlett has been verified against an unencrypted **Codename G6** Xbox Series X|S (Scarlett) GDK build (`MicrosoftGame.Config` + 16 shipped DLLs):
+
+- **100% Native x86-64 PE32+:** All 16 scanned binaries are standard `machine=0x8664` PE32+ (`base=0x180000000`, `.xbld` present on Xbox-built modules). Windows x64 executes `.text` natively — zero CPU emulation required.
+- **Host Win32 & CRT Native:** `amd_fidelityfx_loader_xbox.dll`, `libHttpClient.GDK.dll`, `XCurl.dll`, and all 10 MSVC 140 DLLs resolve exclusively against standard Windows API sets (`api-ms-win-core-*`, `api-ms-win-crt-*`, `WINHTTP.dll`, `CRYPT32.dll`).
+- **Only 3 GDK Shims Imported Across All Sidecar DLLs:**
+  - `xmem.dll` — 6 imports (`amd_fidelityfx_upscaler_xbox.dll` ×3, `Bink2Scarlett.dll` ×2, `XboxBvhBuilder.dll` ×1)
+  - `d3d12_xs.dll` — 2 imports (`amd_fidelityfx_upscaler_xbox.dll` ×1, `XboxBvhBuilder.dll` ×1)
+  - `XAudio2_9.dll` — 1 import (`Bink2Scarlett.dll` ×1)
+- **Live Windows x64 Verification:**
+  - `percyscarlett probe-mem` -> `Allocated 16 MiB Scarlett physical test block at 0x2bae8890000 (active=16777216 B)`
+  - `cargo test` -> `3 passed; 0 failed` (PE32+ header parser, Win32 `VirtualAlloc` pool, live `kernel32.dll` symbol forwarding)
+
+When the **Codename G6** `.exe` is placed into the overlay mount, `percyscarlett inspect <exe>` dumps its exact IAT imports so Windows PE loader binds host Win32 natively and routes every Xbox/GDK import directly into PercyScarlett's shim DLLs.
+
+---
+
 ## Architecture & Roadmap
 
 | Module | Purpose | Current State |
