@@ -21,8 +21,8 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
 | **Disk Overhead** | **0 GB** (NTFS junctions + hardlinks) | ~350 GB extracted intermediates |
 | **CPU Execution** | **Native x86-64** (`machine=0x8664`) | Native / static recompile |
 | **Shipped Sidecar DLLs** | **6/6 live-loaded on Win11 (`LoadLibraryW`)** | Untested |
-| **Compiled Shim DLLs** | **8 Rust `cdylib` DLLs** (`15/15` tests passing, `0` warnings) | Skeleton / Incomplete |
-| **Shader Recompiler** | **Clean-room RDNA2 -> HLSL -> DXBC** (`d3dcompiler_47.dll` + disk cache) | External DXC required |
+| **Compiled Shim DLLs** | **9 Rust `cdylib` DLLs** (`17/17` tests passing, `0` warnings) | Skeleton / Incomplete |
+| **Shader Recompiler** | **Clean-room RDNA2 -> HLSL -> SM 6.6 DXIL (`dxcompiler.dll`) + DXBC** (`21,274/21,522` = **98.8%** on real GTA VI shaders) | Partial / External |
 | **Day-1 Crash Telemetry** | **Built-in VEH fault logger** + `PERCY_XMEM_LOG` + `PERCY_D3D12_LOG` + `report.json` | External debugger required |
 | **Xbox VFS & Auto-Stubs** | **`G:/T:/S:` rewrite** + `percyscarlett stubgen` | Manual |
 
@@ -42,14 +42,20 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
    [PASS] XCurl.dll loaded at 0x7ffc14410000
    DLL verification: 6 passed, 0 failed
    ```
-2. **End-to-End PE32+ Guest Execution (`tests/e2e_bringup.rs`)**
-   Compiles and executes a real PE32+ binary (`scarlett_guest.exe`) dynamically linked against all 8 shim DLLs, validating `XMemAlloc*`, `D3D12CreateDevice` / `D3D12SerializeRootSignature` (Scarlett flag masking), `HSTRING`, `XTaskQueue` / `XUser`, `DStorageGetFactory`, `GameInputCreate`, `kernelx`, `xg_xs`, `inspect`, and `stubgen`.
+2. **End-to-End PE32+ Guest & Hardware Bring-Up (`tests/e2e_bringup.rs` + `src/pe_loader.rs`)**
+   Compiles and executes a real PE32+ binary (`scarlett_guest.exe`) dynamically linked against all **9** shim DLLs (`xmem`, `d3d12_xs`, `winrt_xs`, `xgameruntime`, `dstorage`, `GameInput`, `kernelx`, `xg_xs`, `xaudio2_9`), validating real hardware `D3D12XboxCreateDevice`, `WaitForOriginX` + `PresentX`, `XAudio2Create`, `XMemAlloc*`, `D3D12SerializeRootSignature` (Scarlett flag masking), `HSTRING`, `XTaskQueue` / `XUser`, `DStorageGetFactory`, `GameInputCreate`, `XGCreateTexture2DComputer`, plus in-process PE32+ mapping with `.reloc`, `.pdata` (`RtlAddFunctionTable`), and TLS callbacks (`percyscarlett run`).
 3. **Physical Memory Pool (`percyscarlett probe-mem`)**
    ```text
    Allocated 16 MiB Scarlett physical test block at 0x1eb59000000 (active=16777216 B, blocks=1)
    ```
-4. **Live Instruction-Level RDNA2 -> HLSL -> Windows `DXBC` Compilation (`crates/d3d12_xs`)**
-   Decodes GFX10.3 `SOP2`, `SOPP`, `VOP1`, `VOP2`, `VOPC`, `VOP3`, `SMEM`, `DS` (LDS), and `EXP` (including Mesh `exp target=20` primitive detection), lifts per-instruction HLSL, and compiles live via `System32\d3dcompiler_47.dll` (`D3DCompile`) into `"DXBC"` bytecode with FNV-1a disk caching (`PERCY_SHADER_CACHE`):
+4. **Live GTA VI 21,522-Shader SM 6.6 DXIL Benchmark (`percyscarlett bench-shaders "D:\Grand Theft Auto VI Build\shaders.rpf" --dxil`)**
+   Decodes GFX10.3 `SOP2`, `SOPP`, `VOP1`, `VOP2`, `VOPC`, `VOP3`, `SMEM`, `DS` (LDS), and `EXP` (including Mesh `exp target=20` primitive detection), lifts per-instruction HLSL, and compiles live via `dxcompiler.dll` (`IDxcCompiler3::Compile` SM 6.6 DXIL) and `System32\d3dcompiler_47.dll` (`D3DCompile` DXBC) with FNV-1a disk caching (`PERCY_SHADER_CACHE`):
+   ```text
+   PS09 Shaders: total=21522, benchmarked=21522, lifted=21522/21522 (100.0%) in 749.29s
+   Stages: VS=89 PS=7730 CS=51 Mesh=13588 RT=64
+   DXIL SM 6.6 (dxcompiler.dll): ok=21274/21522 (98.8%), fail=248
+   ```
+   Sample lifted Mesh shader:
    ```hlsl
    // PercyScarlett RDNA2 -> HLSL (ms, 5 insns, 1 exports)
    s[0] = g_cbuf.Load(16u);
@@ -61,16 +67,17 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
    ```
 
 <details>
-<summary>Full Verbatim <code>cargo test --workspace</code> Output (15/15 Passing, 0 Warnings)</summary>
+<summary>Full Verbatim <code>cargo test --workspace</code> Output (17/17 Passing, 0 Warnings)</summary>
 
 ```text
      Running unittests src\lib.rs (target\debug\deps\d3d12_xs.exe)
-running 4 tests
+running 5 tests
 test tests::device_x_proxy_wraps_and_releases_cleanly ... ok
 test rdna2_hlsl::tests::decodes_rdna2_alu_smem_lds_and_detects_mesh_stage ... ok
 test tests::resolves_host_d3d12_exports_on_windows ... ok
+test tests::compiles_rdna2_to_sm66_dxil_and_presents_frames ... ok
 test tests::disk_shader_cache_roundtrip ... ok
-test result: ok. 4 passed; 0 failed
+test result: ok. 5 passed; 0 failed
 
      Running unittests src\lib.rs (target\debug\deps\dstorage.exe)
 test tests::dstorage_factory_and_queue_memory_copy_work ... ok
@@ -82,7 +89,9 @@ test tests::gameinput_create_and_reading_work ... ok
 test tests::title_memory_status_works ... ok
 
      Running unittests src\main.rs (target\debug\deps\percyscarlett.exe)
+running 4 tests
 test pe64::tests::parses_minimal_pe64_header ... ok
+test pe_loader::tests::maps_relocates_registers_pdata_and_executes_pe64_in_process ... ok
 test xmem::tests::allocates_and_frees_physical_pool_blocks ... ok
 test gdk::tests::resolves_kernel32_gettickcount_on_windows ... ok
 
@@ -91,6 +100,9 @@ test scarlett_guest_exe_end_to_end_bringup ... ok
 
      Running unittests src\lib.rs (target\debug\deps\winrt_xs.exe)
 test tests::hstring_create_read_delete_roundtrip ... ok
+
+     Running unittests src\lib.rs (target\debug\deps\xaudio2_9.exe)
+test tests::xaudio2_create_mastering_and_source_voice_work ... ok
 
      Running unittests src\lib.rs (target\debug\deps\xg_xs.exe)
 test tests::format_block_info_and_computer_work ... ok
@@ -110,11 +122,12 @@ test tests::xmem_alloc_free_and_stats_work ... ok
 
 | Crate | Output | Implemented Surface |
 | :--- | :--- | :--- |
-| Root (`src/`) | `percyscarlett.exe` | PE32+ parser, `inspect`, `plan`, `verify-dlls`, `stubgen`, `probe-mem`, `shims` |
+| Root (`src/`) | `percyscarlett.exe` | PE32+ parser, in-process PE32+ loader (`run`), `bench-shaders`, `inspect`, `plan`, `verify-dlls`, `stubgen`, `probe-mem`, `shims` |
 | `crates/xmem` | `xmem.dll` | `XMemAlloc*`, `XMemFree*`, `XMemVirtualQuery`, working set stats, VEH crash logger |
-| `crates/kernelx` | `kernelx.dll` | `XMemAlloc*`, `TitleMemoryStatus`, `JobTitleMemoryStatus`, `SetThreadName` |
-| `crates/d3d12_xs` | `d3d12_xs.dll` | `D3D12XboxCreateDevice`, `D3D12CreateDevice`, opt-in `ID3D12DeviceX` wrapper (`PERCY_D3D12_WRAP=1`), root sig flag masking |
-| `crates/xg_xs` | `xg_xs.dll` | `XGGetFormatBlockInfo`, `XGCreateTexture2DComputer` COM vtable |
+| `crates/kernelx` | `kernelx.dll` | `XMemAlloc*`, `XMemGetAuxiliaryTitleMemory`, `AllocateTitlePhysicalPages`, `TitleMemoryStatus`, `SetThreadName` |
+| `crates/d3d12_xs` | `d3d12_xs.dll` | `D3D12XboxCreateDevice`, `D3D12CreateDevice`, `PresentX`/`WaitForOriginX`/`RegisterFrameEventX`, `CommandQueueXProxy`, SM 6.6 DXIL (`dxcompiler.dll`) + DXBC, root sig flag masking |
+| `crates/xg_xs` | `xg_xs.dll` | `XGGetFormatBlockInfo`, `XGComputeTexture2DLayout`, `XGTileTexture2D`, `XGUntileTexture2D`, `XGCreateTexture2DComputer` |
+| `crates/xaudio2_9` | `xaudio2_9.dll` | `XAudio2Create`, `XAudio2CreateWithVersionInfo`, `IXAudio2`, `IXAudio2MasteringVoice`, `IXAudio2SourceVoice` |
 | `crates/xgameruntime` | `xgameruntime.dll` | `XTaskQueue*`, `XAsync*`, `XUser*`, `Xbl*` offline auth, `XGameSaveInitializeProvider` |
 | `crates/dstorage` | `dstorage.dll` | `DStorageGetFactory` (`IDStorageFactoryX` / `QueueX` / `FileX`), `G:/T:/S:` VFS rewrite |
 | `crates/winrt_xs` | `winrt_xs.dll` | `RoInitialize`, `RoUninitialize`, `RoGetActivationFactory`, `Windows*String` (`HSTRING`) |
@@ -152,16 +165,16 @@ cargo build --release --workspace
 
 ---
 
-## Tests (`15/15 passing`, `0` warnings)
+## Tests (`17/17 passing`, `0` warnings)
 
 ```powershell
 cargo test --workspace
 ```
 
-- `e2e_bringup` (1): Synthetic PE32+ `scarlett_guest.exe` build, `inspect`, `stubgen`, and live execution across all 8 shim DLLs
-- `percyscarlett` (3): PE32+ parser, Win32 `VirtualAlloc` pool, live `kernel32.dll` forwarding
-- `d3d12_xs` (4): Host `d3d12.dll` symbol forwarding, `ID3D12DeviceX` COM wrapper, RDNA2 ALU/SMEM/Mesh lifter (`decodes_rdna2_alu_smem_lds_and_detects_mesh_stage`), and live `d3dcompiler_47.dll` `DXBC` compilation + disk cache (`disk_shader_cache_roundtrip`)
-- `xmem` (1), `kernelx` (1), `xg_xs` (1), `xgameruntime` (1), `dstorage` (1), `winrt_xs` (1), `GameInput` (1): C-ABI exports, COM vtables, `HSTRING`, VFS rewrite, `XGameSave` disk persistence, KBM->Gamepad `GameInput`, and offline GDK runtime checks
+- `e2e_bringup` (1): Synthetic PE32+ `scarlett_guest.exe` build, `inspect`, `stubgen`, and live execution across all **9** shim DLLs (including real hardware `D3D12XboxCreateDevice`, `WaitForOriginX`, `PresentX`, `XAudio2Create`)
+- `percyscarlett` (4): PE32+ parser, in-process PE32+ mapper + `.pdata` `RtlAddFunctionTable` execution (`pe_loader`), Win32 `VirtualAlloc` pool, live `kernel32.dll` forwarding
+- `d3d12_xs` (5): Host `d3d12.dll` symbol forwarding, `ID3D12DeviceX` COM wrapper, RDNA2 ALU/SMEM/Mesh lifter, live `d3dcompiler_47.dll` `DXBC` compilation, and live `dxcompiler.dll` SM 6.6 `DXIL` compilation (`VS`/`PS`/`CS`/`Mesh`/`RT`) + `PresentX`/`CommandQueueXProxy`
+- `xmem` (1), `kernelx` (1), `xg_xs` (1), `xaudio2_9` (1), `xgameruntime` (1), `dstorage` (1), `winrt_xs` (1), `GameInput` (1): C-ABI exports, COM vtables, `HSTRING`, VFS rewrite, `XGameSave` disk persistence, KBM->Gamepad `GameInput`, `XAudio2Create` voices, and offline GDK runtime checks
 
 ---
 
