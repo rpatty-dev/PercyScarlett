@@ -543,6 +543,15 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
+/// Open the picker where the current path (or its parent folder) points, if it exists.
+fn start_dir(dlg: rfd::FileDialog, current: &str) -> rfd::FileDialog {
+    let p = std::path::Path::new(current);
+    match [Some(p), p.parent()].into_iter().flatten().find(|d| d.is_dir()) {
+        Some(d) => dlg.set_directory(d),
+        None => dlg,
+    }
+}
+
 fn card() -> egui::Frame {
     egui::Frame::NONE.fill(SURFACE).corner_radius(14.0_f32).inner_margin(20.0)
 }
@@ -735,7 +744,13 @@ impl DashboardApp {
             egui::Grid::new("paths").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
                 ui.label(RichText::new("Target .exe").color(DIM));
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.exe_path).desired_width(420.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.exe_path).desired_width(360.0));
+                    if ui.button("Browse…").clicked() {
+                        let dlg = rfd::FileDialog::new().add_filter("Executable", &["exe"]);
+                        if let Some(p) = start_dir(dlg, &self.exe_path).pick_file() {
+                            self.exe_path = p.display().to_string();
+                        }
+                    }
                     if ui.button("Launch Overlay").clicked() {
                         self.run_cli(ctx, vec!["launch".into(), self.exe_path.clone()]);
                     }
@@ -749,7 +764,12 @@ impl DashboardApp {
                 ui.end_row();
                 ui.label(RichText::new("Build folder").color(DIM));
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.build_dir).desired_width(420.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.build_dir).desired_width(360.0));
+                    if ui.button("Browse…").clicked() {
+                        if let Some(p) = start_dir(rfd::FileDialog::new(), &self.build_dir).pick_folder() {
+                            self.build_dir = p.display().to_string();
+                        }
+                    }
                     if ui.button("Verify Sidecar DLLs").clicked() {
                         self.run_cli(ctx, vec!["verify-dlls".into(), self.build_dir.clone()]);
                     }
