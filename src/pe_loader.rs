@@ -15,6 +15,124 @@ extern "system" {
     fn GetModuleFileNameA(module: usize, buf: *mut u8, size: u32) -> u32;
     fn GetModuleHandleW(name: *const u16) -> usize;
     fn GetModuleHandleA(name: *const u8) -> usize;
+    fn CreateFileW(
+        name: *const u16,
+        access: u32,
+        share: u32,
+        sa: *const c_void,
+        disp: u32,
+        flags: u32,
+        tmpl: usize,
+    ) -> usize;
+    fn CreateFileA(
+        name: *const u8,
+        access: u32,
+        share: u32,
+        sa: *const c_void,
+        disp: u32,
+        flags: u32,
+        tmpl: usize,
+    ) -> usize;
+    fn GetFileAttributesW(name: *const u16) -> u32;
+}
+
+/// Redirects Xbox console virtual paths (`G:\`, `GAME:\`, `T:\`, `S:\`) to host folders.
+pub fn rewrite_xbox_vfs_path(raw: &str, game_dir: &Path, save_root: &Path) -> Option<std::path::PathBuf> {
+    let trimmed = raw.trim_start_matches(r"\\?\");
+    let lower = trimmed.to_ascii_lowercase();
+    let (rest, base) = if let Some(r) = lower.strip_prefix("g:\\").or_else(|| lower.strip_prefix("g:/")) {
+        (&trimmed[trimmed.len() - r.len()..], game_dir.to_path_buf())
+    } else if let Some(r) = lower.strip_prefix("game:\\").or_else(|| lower.strip_prefix("game:/")).or_else(|| lower.strip_prefix("game:")) {
+        (&trimmed[trimmed.len() - r.len()..], game_dir.to_path_buf())
+    } else if let Some(r) = lower.strip_prefix("t:\\").or_else(|| lower.strip_prefix("t:/")) {
+        (&trimmed[trimmed.len() - r.len()..], save_root.join("T"))
+    } else if let Some(r) = lower.strip_prefix("s:\\").or_else(|| lower.strip_prefix("s:/")) {
+        (&trimmed[trimmed.len() - r.len()..], save_root.join("S"))
+    } else {
+        return None;
+    };
+    let rel = rest.trim_start_matches(['\\', '/']).replace('/', "\\");
+    let _ = std::fs::create_dir_all(&base);
+    Some(base.join(rel))
+}
+
+#[cfg(windows)]
+fn vfs_roots() -> (std::path::PathBuf, std::path::PathBuf) {
+    let game_dir = GUEST_EXE_PATH
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().and_then(|p| Path::new(p).parent().map(|d| d.to_path_buf())))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    let save_root = std::env::var_os("LOCALAPPDATA")
+        .map(|b| std::path::PathBuf::from(b).join("PercyScarlett").join("vfs"))
+        .unwrap_or_else(|| std::env::temp_dir().join("percyscarlett_vfs"));
+    (game_dir, save_root)
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn percy_create_file_w(
+    name: *const u16,
+    access: u32,
+    share: u32,
+    sa: *const c_void,
+    disp: u32,
+    flags: u32,
+    tmpl: usize,
+) -> usize {
+    if !name.is_null() {
+        let mut len = 0usize;
+        while len < 512 && *name.add(len) != 0 {
+            len += 1;
+        }
+        let s = String::from_utf16_lossy(std::slice::from_raw_parts(name, len));
+        let (gd, sr) = vfs_roots();
+        if let Some(mapped) = rewrite_xbox_vfs_path(&s, &gd, &sr) {
+            let mut w: Vec<u16> = mapped.to_string_lossy().encode_utf16().collect();
+            w.push(0);
+            return CreateFileW(w.as_ptr(), access, share, sa, disp, flags, tmpl);
+        }
+    }
+    CreateFileW(name, access, share, sa, disp, flags, tmpl)
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn percy_create_file_a(
+    name: *const u8,
+    access: u32,
+    share: u32,
+    sa: *const c_void,
+    disp: u32,
+    flags: u32,
+    tmpl: usize,
+) -> usize {
+    if !name.is_null() {
+        let s = read_cstr_mem(name);
+        let (gd, sr) = vfs_roots();
+        if let Some(mapped) = rewrite_xbox_vfs_path(&s, &gd, &sr) {
+            if let Ok(cs) = CString::new(mapped.to_string_lossy().as_bytes()) {
+                return CreateFileA(cs.as_ptr() as *const u8, access, share, sa, disp, flags, tmpl);
+            }
+        }
+    }
+    CreateFileA(name, access, share, sa, disp, flags, tmpl)
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn percy_get_file_attributes_w(name: *const u16) -> u32 {
+    if !name.is_null() {
+        let mut len = 0usize;
+        while len < 512 && *name.add(len) != 0 {
+            len += 1;
+        }
+        let s = String::from_utf16_lossy(std::slice::from_raw_parts(name, len));
+        let (gd, sr) = vfs_roots();
+        if let Some(mapped) = rewrite_xbox_vfs_path(&s, &gd, &sr) {
+            let mut w: Vec<u16> = mapped.to_string_lossy().encode_utf16().collect();
+            w.push(0);
+            return GetFileAttributesW(w.as_ptr());
+        }
+    }
+    GetFileAttributesW(name)
 }
 
 static GUEST_EXE_PATH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -350,6 +468,9 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
                                     "GetModuleFileNameA" => percy_get_module_file_name_a as *const () as usize,
                                     "GetModuleHandleW" => percy_get_module_handle_w as *const () as usize,
                                     "GetModuleHandleA" => percy_get_module_handle_a as *const () as usize,
+                                    "CreateFileW" => percy_create_file_w as *const () as usize,
+                                    "CreateFileA" => percy_create_file_a as *const () as usize,
+                                    "GetFileAttributesW" => percy_get_file_attributes_w as *const () as usize,
                                     _ => GetProcAddress(hmod, fn_name_ptr),
                                 };
                                 if addr == 0 {
@@ -646,5 +767,16 @@ mod tests {
         let ret = unsafe { percy_rtl_pc_to_file_header((stats.mapped_base + 0x1002) as *const c_void, &mut out_base) };
         assert_eq!(ret as u64, stats.mapped_base);
         assert_eq!(out_base as u64, stats.mapped_base);
+    }
+
+    #[test]
+    fn vfs_redirects_g_game_t_and_s_drives() {
+        let gd = Path::new(r"C:\Games\Test");
+        let sr = std::env::temp_dir().join("percy_vfs_test");
+        assert_eq!(rewrite_xbox_vfs_path(r"G:\data\shaders.rpf", gd, &sr).unwrap(), gd.join(r"data\shaders.rpf"));
+        assert_eq!(rewrite_xbox_vfs_path("GAME:/media/a.bin", gd, &sr).unwrap(), gd.join(r"media\a.bin"));
+        assert_eq!(rewrite_xbox_vfs_path(r"T:\temp.dat", gd, &sr).unwrap(), sr.join("T").join("temp.dat"));
+        assert_eq!(rewrite_xbox_vfs_path(r"S:\save\slot1", gd, &sr).unwrap(), sr.join("S").join(r"save\slot1"));
+        assert!(rewrite_xbox_vfs_path(r"C:\Windows\System32\d3d12.dll", gd, &sr).is_none());
     }
 }

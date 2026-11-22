@@ -72,6 +72,67 @@ pub unsafe extern "system" fn XSystemGetDeviceType() -> u32 {
 }
 
 #[no_mangle]
+pub unsafe extern "system" fn XSystemGetConsoleId(
+    size: usize,
+    buf: *mut u8,
+    used: *mut usize,
+) -> i32 {
+    let id = b"PERCY-XSX-0001\0";
+    if !used.is_null() {
+        *used = id.len();
+    }
+    if !buf.is_null() && size > 0 {
+        let n = id.len().min(size);
+        std::ptr::copy_nonoverlapping(id.as_ptr(), buf, n);
+        *buf.add(n - 1) = 0;
+    }
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XSystemGetXboxLiveSandboxId(
+    size: usize,
+    buf: *mut u8,
+    used: *mut usize,
+) -> i32 {
+    let s = b"RETAIL\0";
+    if !used.is_null() {
+        *used = s.len();
+    }
+    if !buf.is_null() && size > 0 {
+        let n = s.len().min(size);
+        std::ptr::copy_nonoverlapping(s.as_ptr(), buf, n);
+        *buf.add(n - 1) = 0;
+    }
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XPackageGetCurrentProcessPackageIdentifier(
+    size: usize,
+    buf: *mut u8,
+) -> i32 {
+    let id = b"PercyScarlett.Title_1.0.0.0_x64__8wekyb3d8bbwe\0";
+    if buf.is_null() || size == 0 {
+        return E_POINTER;
+    }
+    let n = id.len().min(size);
+    std::ptr::copy_nonoverlapping(id.as_ptr(), buf, n);
+    *buf.add(n - 1) = 0;
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XPackageEnumeratePackages(
+    _kind: u32,
+    _scope: u32,
+    _context: *mut c_void,
+    _callback: *const c_void,
+) -> i32 {
+    S_OK
+}
+
+#[no_mangle]
 pub unsafe extern "system" fn XUserAddAsync(
     _options: u32,
     async_block: *mut XAsyncBlock,

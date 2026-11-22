@@ -3,7 +3,6 @@ target/
 *.pdb
 *.exe
 *.dll
-GEMINI.md
 mount/
 launch_build.bat
 *.log

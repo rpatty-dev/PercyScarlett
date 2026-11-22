@@ -1,5 +1,6 @@
 pub mod compute_exec;
 pub mod rdna2_hlsl;
+pub mod rdna2_isa;
 
 use std::ffi::{c_void, CString};
 use std::fs::OpenOptions;
