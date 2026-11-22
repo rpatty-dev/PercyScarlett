@@ -601,6 +601,34 @@ impl DashboardApp {
         );
     }
 
+    fn spawn_self_test(&self, ctx: &egui::Context) {
+        let (rt_have, rt_total, rt_dir) = self.runtime_count.lock().unwrap().clone();
+        let shim_dir = if rt_have >= rt_total {
+            rt_dir
+        } else {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                .unwrap_or_else(|| PathBuf::from("."))
+        };
+        let st_slot = Arc::clone(&self.self_test);
+        let console = Arc::clone(&self.console);
+        let busy = Arc::clone(&self.busy);
+        let ctx2 = ctx.clone();
+        *busy.lock().unwrap() = true;
+        std::thread::spawn(move || {
+            let res = crate::self_test::run_self_test(&shim_dir);
+            {
+                let mut c = console.lock().unwrap();
+                c.clear();
+                c.push_str(&format!("{}\n\n{}\n", res.summary, res.markdown));
+            }
+            *st_slot.lock().unwrap() = Some(res);
+            *busy.lock().unwrap() = false;
+            ctx2.request_repaint();
+        });
+    }
+
     fn top_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_busy: bool) {
         ui.horizontal(|ui| {
             if let Some(tex) = &self.mascot_tex {
@@ -686,30 +714,7 @@ impl DashboardApp {
                             self.install_runtime(ctx);
                         }
                         if ui.add_enabled(!is_busy, egui::Button::new("Run Self-Test")).clicked() {
-                            let shim_dir = if ready {
-                                rt_dir.clone()
-                            } else {
-                                std::env::current_exe()
-                                    .ok()
-                                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-                                    .unwrap_or_else(|| PathBuf::from("."))
-                            };
-                            let st_slot = Arc::clone(&self.self_test);
-                            let console = Arc::clone(&self.console);
-                            let busy = Arc::clone(&self.busy);
-                            let ctx2 = ctx.clone();
-                            *busy.lock().unwrap() = true;
-                            std::thread::spawn(move || {
-                                let res = crate::self_test::run_self_test(&shim_dir);
-                                {
-                                    let mut c = console.lock().unwrap();
-                                    c.clear();
-                                    c.push_str(&format!("{}\n\n{}\n", res.summary, res.markdown));
-                                }
-                                *st_slot.lock().unwrap() = Some(res);
-                                *busy.lock().unwrap() = false;
-                                ctx2.request_repaint();
-                            });
+                            self.spawn_self_test(ctx);
                         }
                         let st_res = self.self_test.lock().unwrap().clone();
                         if let Some(res) = st_res {
@@ -899,6 +904,24 @@ impl eframe::App for DashboardApp {
                             ui.checkbox(&mut self.wrap_d3d12, "PERCY_D3D12_WRAP=1 · enable ID3D12DeviceX COM proxy");
                             ui.checkbox(&mut self.log_d3d12, "PERCY_D3D12_LOG · trace PresentX and D3D12.X calls");
                             ui.checkbox(&mut self.log_xmem, "PERCY_XMEM_LOG · trace XMemAlloc / VirtualAlloc pool");
+                            ui.add_space(12.0);
+                            ui.separator();
+                            ui.add_space(8.0);
+                            ui.label(RichText::new("Diagnostics & Community Testing").font(semibold(15.0)).color(WHITE));
+                            ui.label(RichText::new("Run hardware/shim checks and open a pre-filled GitHub Issue with your results.").size(12.5).color(DIM));
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                if ui.add_enabled(!is_busy, primary("Run Self-Test")).clicked() {
+                                    self.spawn_self_test(ctx);
+                                }
+                                let st_res = self.self_test.lock().unwrap().clone();
+                                if let Some(res) = st_res {
+                                    let lbl = format!("Submit Pre-Filled GitHub Issue ({}/{})", res.passed, res.total);
+                                    if ui.add(primary(&lbl)).clicked() {
+                                        ctx.open_url(egui::OpenUrl::new_tab(res.issue_url));
+                                    }
+                                }
+                            });
                         });
                     }
                 }
