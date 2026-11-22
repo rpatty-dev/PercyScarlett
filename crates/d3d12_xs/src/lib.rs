@@ -636,6 +636,70 @@ unsafe fn wrap_device_pointer(inner: *mut c_void) -> *mut c_void {
     Box::into_raw(proxy) as *mut c_void
 }
 
+#[cfg(windows)]
+unsafe fn pick_high_perf_adapter() -> *mut c_void {
+    #[repr(C)]
+    struct AdapterDesc1 {
+        _desc: [u16; 128],
+        _ven: u32,
+        _dev: u32,
+        _sub: u32,
+        _rev: u32,
+        ded_vram: usize,
+        _ded_sys: usize,
+        _shared_sys: usize,
+        _luid: u64,
+        flags: u32,
+    }
+    extern "system" {
+        fn LoadLibraryA(name: *const i8) -> usize;
+        fn GetProcAddress(module: usize, name: *const i8) -> usize;
+    }
+    let dxgi = LoadLibraryA(b"dxgi.dll\0".as_ptr() as *const i8);
+    if dxgi == 0 {
+        return std::ptr::null_mut();
+    }
+    let p_create = GetProcAddress(dxgi, b"CreateDXGIFactory1\0".as_ptr() as *const i8);
+    if p_create == 0 {
+        return std::ptr::null_mut();
+    }
+    let iid_fac1: [u8; 16] = [0x78, 0xae, 0x0a, 0x77, 0x6f, 0xf2, 0xba, 0x4d, 0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87];
+    let create_fac: unsafe extern "system" fn(*const [u8; 16], *mut *mut c_void) -> i32 = std::mem::transmute(p_create);
+    let mut fac: *mut c_void = std::ptr::null_mut();
+    if create_fac(&iid_fac1, &mut fac) != 0 || fac.is_null() {
+        return std::ptr::null_mut();
+    }
+    let fac_vtbl = &*(*(fac as *const *const [*const c_void; 16]));
+    let enum_ad: unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> i32 = std::mem::transmute(fac_vtbl[12]);
+    let fac_rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(fac_vtbl[2]);
+
+    let mut best: *mut c_void = std::ptr::null_mut();
+    let mut best_vram: usize = 0;
+    for i in 0..16u32 {
+        let mut cand: *mut c_void = std::ptr::null_mut();
+        if enum_ad(fac, i, &mut cand) != 0 || cand.is_null() {
+            break;
+        }
+        let ad_vtbl = &*(*(cand as *const *const [*const c_void; 12]));
+        let get_desc: unsafe extern "system" fn(*mut c_void, *mut AdapterDesc1) -> i32 = std::mem::transmute(ad_vtbl[10]);
+        let ad_rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(ad_vtbl[2]);
+        let mut d: AdapterDesc1 = std::mem::zeroed();
+        if get_desc(cand, &mut d) == 0 && (d.flags & 2) == 0 && (best.is_null() || d.ded_vram > best_vram) {
+            if !best.is_null() {
+                let old_vtbl = &*(*(best as *const *const [*const c_void; 12]));
+                let old_rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(old_vtbl[2]);
+                old_rel(best);
+            }
+            best = cand;
+            best_vram = d.ded_vram;
+            continue;
+        }
+        ad_rel(cand);
+    }
+    fac_rel(fac);
+    best
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn D3D12XboxCreateDevice(
     adapter: *mut c_void,
@@ -647,7 +711,17 @@ pub unsafe extern "system" fn D3D12XboxCreateDevice(
         return 0x8000_4003u32 as i32; // E_POINTER
     }
     const D3D_FEATURE_LEVEL_12_0: u32 = 0xC000;
-    let hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, riid, out_device);
+    #[cfg(windows)]
+    let chosen = if adapter.is_null() { pick_high_perf_adapter() } else { adapter };
+    #[cfg(not(windows))]
+    let chosen = adapter;
+    let hr = D3D12CreateDevice(chosen, D3D_FEATURE_LEVEL_12_0, riid, out_device);
+    #[cfg(windows)]
+    if adapter.is_null() && !chosen.is_null() {
+        let ad_vtbl = &*(*(chosen as *const *const [*const c_void; 12]));
+        let ad_rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(ad_vtbl[2]);
+        ad_rel(chosen);
+    }
     if hr >= 0 && !(*out_device).is_null() && std::env::var("PERCY_D3D12_WRAP").ok().as_deref() == Some("1") {
         *out_device = wrap_device_pointer(*out_device);
     }

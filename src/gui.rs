@@ -617,6 +617,8 @@ impl DashboardApp {
         let ctx2 = ctx.clone();
         *busy.lock().unwrap() = true;
         std::thread::spawn(move || {
+            let old_path = std::env::var("PATH").unwrap_or_default();
+            std::env::set_var("PATH", format!("{};{old_path}", shim_dir.display()));
             let res = crate::self_test::run_self_test(&shim_dir);
             {
                 let mut c = console.lock().unwrap();

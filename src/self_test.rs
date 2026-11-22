@@ -179,29 +179,51 @@ fn probe_dxgi_and_d3d12_caps() -> (String, Result<String, String>) {
             std::mem::transmute(fac_vtbl[12]);
         let fac_rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(fac_vtbl[2]);
 
-        let mut adapter: *mut c_void = std::ptr::null_mut();
-        if enum_adapters1(fac, 0, &mut adapter) != 0 || adapter.is_null() {
-            fac_rel(fac);
-            return ("none".into(), Err("No DXGI adapter 0".into()));
-        }
-        let ad_vtbl = &*(*(adapter as *const *const [*const c_void; 12]));
-        // IDXGIAdapter1::GetDesc1 is vtable slot 10
-        let get_desc1: unsafe extern "system" fn(*mut c_void, *mut AdapterDesc1) -> i32 =
-            std::mem::transmute(ad_vtbl[10]);
-        let ad_rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(ad_vtbl[2]);
+        let mut best_adapter: *mut c_void = std::ptr::null_mut();
+        let mut best_vram: usize = 0;
+        let mut best_label = String::from("DXGI Adapter 0");
+        for idx in 0..16u32 {
+            let mut cand: *mut c_void = std::ptr::null_mut();
+            if enum_adapters1(fac, idx, &mut cand) != 0 || cand.is_null() {
+                break;
+            }
+            let ad_vtbl = &*(*(cand as *const *const [*const c_void; 12]));
+            let get_desc1: unsafe extern "system" fn(*mut c_void, *mut AdapterDesc1) -> i32 =
+                std::mem::transmute(ad_vtbl[10]);
+            let ad_rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(ad_vtbl[2]);
 
-        let mut desc: AdapterDesc1 = std::mem::zeroed();
-        let gpu_label = if get_desc1(adapter, &mut desc) == 0 {
-            let end = desc.desc.iter().position(|&c| c == 0).unwrap_or(128);
-            let name = String::from_utf16_lossy(&desc.desc[..end]);
-            let vram_mb = desc.ded_vram / (1024 * 1024);
-            format!(
-                "{name} (VRAM {vram_mb} MiB, ven=0x{:04x}, dev=0x{:04x})",
-                desc.vendor_id, desc.device_id
-            )
-        } else {
-            "DXGI Adapter 0".into()
-        };
+            let mut desc: AdapterDesc1 = std::mem::zeroed();
+            if get_desc1(cand, &mut desc) == 0 {
+                let is_sw = (desc.flags & 2) != 0; // DXGI_ADAPTER_FLAG_SOFTWARE
+                if !is_sw && (best_adapter.is_null() || desc.ded_vram > best_vram) {
+                    if !best_adapter.is_null() {
+                        let old_vtbl = &*(*(best_adapter as *const *const [*const c_void; 12]));
+                        let old_rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(old_vtbl[2]);
+                        old_rel(best_adapter);
+                    }
+                    let end = desc.desc.iter().position(|&c| c == 0).unwrap_or(128);
+                    let name = String::from_utf16_lossy(&desc.desc[..end]);
+                    let vram_mb = desc.ded_vram / (1024 * 1024);
+                    best_vram = desc.ded_vram;
+                    best_label = format!(
+                        "{name} (VRAM {vram_mb} MiB, ven=0x{:04x}, dev=0x{:04x})",
+                        desc.vendor_id, desc.device_id
+                    );
+                    best_adapter = cand;
+                    continue;
+                }
+            }
+            ad_rel(cand);
+        }
+
+        if best_adapter.is_null() {
+            fac_rel(fac);
+            return ("none".into(), Err("No hardware DXGI adapter".into()));
+        }
+        let adapter = best_adapter;
+        let ad_vtbl = &*(*(adapter as *const *const [*const c_void; 12]));
+        let ad_rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(ad_vtbl[2]);
+        let gpu_label = best_label;
 
         let create_dev: CreateDeviceFn = std::mem::transmute(d_create);
         let mut dev: *mut c_void = std::ptr::null_mut();

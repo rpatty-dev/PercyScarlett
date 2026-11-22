@@ -11,6 +11,14 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
+// Hint NVIDIA Optimus & AMD Switchable Graphics to select the discrete high-performance GPU.
+#[cfg(windows)]
+#[no_mangle]
+pub static NvOptimusEnablement: u32 = 1;
+#[cfg(windows)]
+#[no_mangle]
+pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
@@ -142,10 +150,21 @@ fn main() {
             shader_bench::run_shader_benchmark(p, limit, dxil);
         }
         Some("self-test") => {
-            let shim_dir = std::env::current_exe()
+            let exe_dir = std::env::current_exe()
                 .ok()
                 .and_then(|p| p.parent().map(|d| d.to_path_buf()))
                 .unwrap_or_else(|| Path::new(".").to_path_buf());
+            let rt_dir = std::env::var_os("LOCALAPPDATA")
+                .map(|b| std::path::PathBuf::from(b).join("PercyScarlett").join("runtime"));
+            let shim_dir = if exe_dir.join("d3d12_xs.dll").exists() {
+                exe_dir
+            } else if let Some(rd) = rt_dir.filter(|p| p.join("d3d12_xs.dll").exists()) {
+                rd
+            } else {
+                exe_dir
+            };
+            let old_path = std::env::var("PATH").unwrap_or_default();
+            std::env::set_var("PATH", format!("{};{old_path}", shim_dir.display()));
             let res = self_test::run_self_test(&shim_dir);
             println!("{}\n\n{}", res.summary, res.markdown);
             let _ = fs::write("percyscarlett_test_report.md", &res.markdown);
