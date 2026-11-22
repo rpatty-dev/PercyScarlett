@@ -12,9 +12,9 @@ pub struct ScarlettShimSpec {
 
 pub const SHIM_SPECS: &[ScarlettShimSpec] = &[
     ScarlettShimSpec { dll: "xmem.dll", area: "Memory", role: "XMemAlloc*, XMemFree*, XMemVirtualQuery, working set stats", status: "Live-DLL Verified (crates/xmem)" },
-    ScarlettShimSpec { dll: "kernelx.dll", area: "Memory/OS", role: "XMemAllocPhysical, 64K/4M aliasing, title memory", status: "Prototype (xmem.rs)" },
-    ScarlettShimSpec { dll: "d3d12_xs.dll", area: "Graphics", role: "D3D12CreateDevice, root sig proxy, ID3D12DeviceX, PresentX", status: "Live-DLL Verified (crates/d3d12_xs)" },
-    ScarlettShimSpec { dll: "xg_xs.dll", area: "Graphics", role: "Scarlett texture/buffer tile swizzle & layout", status: "Paired w/ PercyStar tex.rs" },
+    ScarlettShimSpec { dll: "kernelx.dll", area: "Memory/OS", role: "XMemAlloc*, TitleMemoryStatus, SetThreadName", status: "Live-DLL Verified (crates/kernelx)" },
+    ScarlettShimSpec { dll: "d3d12_xs.dll", area: "Graphics", role: "D3D12XboxCreateDevice, D3D12CreateDevice, root sig proxy", status: "Live-DLL Verified (crates/d3d12_xs)" },
+    ScarlettShimSpec { dll: "xg_xs.dll", area: "Graphics", role: "XGGetFormatBlockInfo, XGCreateTexture2DComputer", status: "Live-DLL Verified (crates/xg_xs)" },
     ScarlettShimSpec { dll: "xgameruntime.dll", area: "GDK", role: "XTaskQueue, XAsync, XUserGetId, XGameSave", status: "Live-DLL Verified (crates/xgameruntime)" },
     ScarlettShimSpec { dll: "dstorage.dll", area: "IO", role: "DirectStorage configuration & factory shim", status: "Live-DLL Verified (crates/dstorage)" },
     ScarlettShimSpec { dll: "XAudio2_9.dll", area: "Audio", role: "XAudio2 + XMA2 / Opus voice playback", status: "Host System32 Verified" },

@@ -22,6 +22,8 @@ fn scarlett_guest_exe_end_to_end_bringup() {
         "-p", "xgameruntime",
         "-p", "dstorage",
         "-p", "gameinput",
+        "-p", "kernelx",
+        "-p", "xg_xs",
     ];
     if is_release {
         build_args.push("--release");
@@ -39,12 +41,16 @@ fn scarlett_guest_exe_end_to_end_bringup() {
     let xgame_dll = target_dir.join("xgameruntime.dll");
     let dstorage_dll = target_dir.join("dstorage.dll");
     let gameinput_dll = target_dir.join("GameInput.dll");
+    let kernelx_dll = target_dir.join("kernelx.dll");
+    let xgxs_dll = target_dir.join("xg_xs.dll");
     assert!(xmem_dll.exists(), "missing {}", xmem_dll.display());
     assert!(d3d12_dll.exists(), "missing {}", d3d12_dll.display());
     assert!(winrt_dll.exists(), "missing {}", winrt_dll.display());
     assert!(xgame_dll.exists(), "missing {}", xgame_dll.display());
     assert!(dstorage_dll.exists(), "missing {}", dstorage_dll.display());
     assert!(gameinput_dll.exists(), "missing {}", gameinput_dll.display());
+    assert!(kernelx_dll.exists(), "missing {}", kernelx_dll.display());
+    assert!(xgxs_dll.exists(), "missing {}", xgxs_dll.display());
 
     let work = std::env::temp_dir().join(format!("percyscarlett_e2e_{}", std::process::id()));
     let _ = fs::remove_dir_all(&work);
@@ -57,6 +63,8 @@ fn scarlett_guest_exe_end_to_end_bringup() {
     fs::copy(&xgame_dll, work.join("xgameruntime.dll")).unwrap();
     fs::copy(&dstorage_dll, work.join("dstorage.dll")).unwrap();
     fs::copy(&gameinput_dll, work.join("GameInput.dll")).unwrap();
+    fs::copy(&kernelx_dll, work.join("kernelx.dll")).unwrap();
+    fs::copy(&xgxs_dll, work.join("xg_xs.dll")).unwrap();
 
     // Synthesize a real PE32+ executable importing xmem.dll + d3d12_xs.dll.
     let guest_src = work.join("scarlett_guest.rs");
@@ -105,11 +113,22 @@ extern "system" {
 #[link(name = "dstorage", kind = "dylib")]
 extern "system" {
     fn DStorageSetConfiguration(cfg: usize) -> i32;
+    fn DStorageGetFactory(riid: usize, out_factory: *mut usize) -> i32;
 }
 
 #[link(name = "GameInput", kind = "dylib")]
 extern "system" {
     fn GameInputCreate(out_input: *mut usize) -> i32;
+}
+
+#[link(name = "kernelx", kind = "dylib")]
+extern "system" {
+    fn SetThreadName(thread: usize, name: *const u16) -> i32;
+}
+
+#[link(name = "xg_xs", kind = "dylib")]
+extern "system" {
+    fn XGCreateTexture2DComputer(desc: usize, out_comp: *mut usize) -> i32;
 }
 
 #[repr(C)]
@@ -176,8 +195,16 @@ fn main() {
         XTaskQueueCloseHandle(tq);
 
         assert_eq!(DStorageSetConfiguration(0), 0);
+        let mut ds_fac = 0usize;
+        assert_eq!(DStorageGetFactory(0, &mut ds_fac), 0);
+        assert_ne!(ds_fac, 0);
+
         let mut gi = 0usize;
         let _ = GameInputCreate(&mut gi);
+        assert_eq!(SetThreadName(0, core::ptr::null()), 0);
+        let mut xg_comp = 0usize;
+        assert_eq!(XGCreateTexture2DComputer(0, &mut xg_comp), 0);
+        assert_ne!(xg_comp, 0);
     }
 }
 "#,

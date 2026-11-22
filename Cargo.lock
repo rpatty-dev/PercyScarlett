@@ -15,11 +15,19 @@ name = "gameinput"
 version = "0.1.0"
 
 [[package]]
+name = "kernelx"
+version = "0.1.0"
+
+[[package]]
 name = "percyscarlett"
 version = "0.1.0"
 
 [[package]]
 name = "winrt_xs"
+version = "0.1.0"
+
+[[package]]
+name = "xg_xs"
 version = "0.1.0"
 
 [[package]]

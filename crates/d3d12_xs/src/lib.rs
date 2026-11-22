@@ -226,12 +226,16 @@ pub unsafe extern "system" fn D3D12EnableExperimentalFeatures(
 
 #[no_mangle]
 pub unsafe extern "system" fn D3D12XboxCreateDevice(
-    _adapter: *mut c_void,
+    adapter: *mut c_void,
     _params: *const c_void,
-    _riid: *const c_void,
-    _out_device: *mut *mut c_void,
+    riid: *const c_void,
+    out_device: *mut *mut c_void,
 ) -> i32 {
-    E_NOTIMPL
+    if out_device.is_null() {
+        return 0x8000_4003u32 as i32; // E_POINTER
+    }
+    const D3D_FEATURE_LEVEL_12_0: u32 = 0xC000;
+    D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, riid, out_device)
 }
 
 #[cfg(test)]
