@@ -786,6 +786,209 @@ pub unsafe fn wrap_command_queue(inner: *mut c_void) -> *mut c_void {
     })) as *mut c_void
 }
 
+/// Auto-creates a Win32 window + DXGI `IDXGISwapChain3` bound to `BOUND_SWAPCHAIN` so `PresentX`
+/// presents real frames on Windows 10/11 when given a valid `ID3D12CommandQueue`.
+#[no_mangle]
+pub unsafe extern "system" fn PercyEnsureAutoSwapChain(
+    command_queue: *mut c_void,
+    width: u32,
+    height: u32,
+) -> i32 {
+    #[cfg(windows)]
+    {
+        if BOUND_SWAPCHAIN.load(Ordering::Acquire) != 0 {
+            return S_OK;
+        }
+        if command_queue.is_null() {
+            return 0x8000_4003u32 as i32;
+        }
+        #[repr(C)]
+        struct WndClassExW {
+            cb_size: u32,
+            style: u32,
+            wnd_proc: unsafe extern "system" fn(usize, u32, usize, isize) -> isize,
+            cls_extra: i32,
+            wnd_extra: i32,
+            instance: usize,
+            icon: usize,
+            cursor: usize,
+            bg: usize,
+            menu: *const u16,
+            class_name: *const u16,
+            icon_sm: usize,
+        }
+        #[repr(C)]
+        struct SwapChainDesc1 {
+            width: u32,
+            height: u32,
+            format: u32,
+            stereo: i32,
+            sample_count: u32,
+            sample_quality: u32,
+            buffer_usage: u32,
+            buffer_count: u32,
+            scaling: u32,
+            swap_effect: u32,
+            alpha_mode: u32,
+            flags: u32,
+        }
+        extern "system" {
+            fn GetModuleHandleW(name: *const u16) -> usize;
+            fn RegisterClassExW(wc: *const WndClassExW) -> u16;
+            fn CreateWindowExW(
+                ex: u32,
+                cls: *const u16,
+                title: *const u16,
+                style: u32,
+                x: i32,
+                y: i32,
+                w: i32,
+                h: i32,
+                parent: usize,
+                menu: usize,
+                inst: usize,
+                param: *mut c_void,
+            ) -> usize;
+            fn DefWindowProcW(hwnd: usize, msg: u32, w: usize, l: isize) -> isize;
+        }
+        let cls_name: Vec<u16> = "PercyScarlettWnd\0".encode_utf16().collect();
+        let title: Vec<u16> = "PercyScarlett\0".encode_utf16().collect();
+        let hinst = GetModuleHandleW(std::ptr::null());
+        let wc = WndClassExW {
+            cb_size: std::mem::size_of::<WndClassExW>() as u32,
+            style: 0,
+            wnd_proc: DefWindowProcW,
+            cls_extra: 0,
+            wnd_extra: 0,
+            instance: hinst,
+            icon: 0,
+            cursor: 0,
+            bg: 0,
+            menu: std::ptr::null(),
+            class_name: cls_name.as_ptr(),
+            icon_sm: 0,
+        };
+        let _ = RegisterClassExW(&wc);
+        let hwnd = CreateWindowExW(
+            0,
+            cls_name.as_ptr(),
+            title.as_ptr(),
+            0x00CF_0000, // WS_OVERLAPPEDWINDOW
+            100,
+            100,
+            width.max(320) as i32,
+            height.max(240) as i32,
+            0,
+            0,
+            hinst,
+            std::ptr::null_mut(),
+        );
+        if hwnd == 0 {
+            return E_FAIL;
+        }
+        let dxgi_name = CString::new("dxgi.dll").unwrap();
+        let dxgi = LoadLibraryA(dxgi_name.as_ptr());
+        if dxgi == 0 {
+            return E_FAIL;
+        }
+        let sym = CString::new("CreateDXGIFactory1").unwrap();
+        let addr = GetProcAddress(dxgi, sym.as_ptr());
+        if addr == 0 {
+            return E_FAIL;
+        }
+        type CreateFactoryFn = unsafe extern "system" fn(*const [u8; 16], *mut *mut c_void) -> i32;
+        let create_factory: CreateFactoryFn = std::mem::transmute(addr);
+        // IID_IDXGIFactory2 {50c83a1c-e072-4c48-87b0-3630fa36a6d0}
+        const IID_IDXGIFACTORY2: [u8; 16] = [
+            0x1c, 0x3a, 0xc8, 0x50, 0x72, 0xe0, 0x48, 0x4c, 0x87, 0xb0, 0x36, 0x30, 0xfa, 0x36, 0xa6, 0xd0,
+        ];
+        let mut factory: *mut c_void = std::ptr::null_mut();
+        let hr = create_factory(&IID_IDXGIFACTORY2, &mut factory);
+        if hr < 0 || factory.is_null() {
+            return hr;
+        }
+        let desc = SwapChainDesc1 {
+            width: width.max(320),
+            height: height.max(240),
+            format: 28, // DXGI_FORMAT_R8G8B8A8_UNORM
+            stereo: 0,
+            sample_count: 1,
+            sample_quality: 0,
+            buffer_usage: 0x20, // DXGI_USAGE_RENDER_TARGET_OUTPUT
+            buffer_count: 2,
+            scaling: 0,
+            swap_effect: 4, // DXGI_SWAP_EFFECT_FLIP_DISCARD
+            alpha_mode: 0,
+            flags: 0,
+        };
+        // IDXGIFactory2::CreateSwapChainForHwnd is vtable slot 15
+        let fvtbl = *(factory as *const *const *const c_void);
+        let create_sc: unsafe extern "system" fn(
+            *mut c_void,
+            *mut c_void,
+            usize,
+            *const SwapChainDesc1,
+            *const c_void,
+            *mut c_void,
+            *mut *mut c_void,
+        ) -> i32 = std::mem::transmute(*fvtbl.add(15));
+        let mut sc: *mut c_void = std::ptr::null_mut();
+        let hr_sc = create_sc(factory, command_queue, hwnd, &desc, std::ptr::null(), std::ptr::null_mut(), &mut sc);
+        if hr_sc >= 0 && !sc.is_null() {
+            BOUND_SWAPCHAIN.store(sc as usize, Ordering::Release);
+            log_d3d12("PercyEnsureAutoSwapChain: created IDXGISwapChain1 + HWND");
+        }
+        hr_sc
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (command_queue, width, height);
+        E_NOTIMPL
+    }
+}
+
+/// Lifts RDNA2 bytecode at runtime to SM 6.6 DXIL via `dxcompiler.dll` (using disk cache).
+#[no_mangle]
+pub unsafe extern "system" fn PercyLiftRdna2ToDxil(
+    rdna2_ptr: *const u8,
+    rdna2_len: usize,
+    stage_hint: u32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    #[cfg(windows)]
+    {
+        if rdna2_ptr.is_null() || rdna2_len == 0 || out_ptr.is_null() || out_len.is_null() {
+            return 0x8000_4003u32 as i32;
+        }
+        let hint = match stage_hint {
+            0 => rdna2_hlsl::ShaderStage::Vertex,
+            1 => rdna2_hlsl::ShaderStage::Pixel,
+            2 => rdna2_hlsl::ShaderStage::Compute,
+            3 => rdna2_hlsl::ShaderStage::Mesh,
+            4 => rdna2_hlsl::ShaderStage::Geometry,
+            _ => rdna2_hlsl::ShaderStage::RayTracing,
+        };
+        let bytes = std::slice::from_raw_parts(rdna2_ptr, rdna2_len);
+        let (stage, hlsl, _) = rdna2_hlsl::lift_to_hlsl(bytes, hint);
+        match compile_hlsl_to_dxil(&hlsl, stage) {
+            Ok(dxil) => {
+                let len = dxil.len();
+                let boxed = dxil.into_boxed_slice();
+                *out_ptr = Box::into_raw(boxed) as *mut u8;
+                *out_len = len;
+                S_OK
+            }
+            Err(_) => E_FAIL,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (rdna2_ptr, rdna2_len, stage_hint, out_ptr, out_len);
+        E_NOTIMPL
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

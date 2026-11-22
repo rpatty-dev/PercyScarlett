@@ -273,6 +273,27 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                     format!("vop3_0x{op:03x} v{vdst}")
                 }
             }
+        } else if (w0 >> 26) == 0x3C {
+            // MIMG (image_load / image_sample, 64-bit+)
+            len_words = 2;
+            let op = (w0 >> 18) & 0xFF;
+            let vaddr = w1 & 0xFF;
+            let vdata = (w1 >> 8) & 0xFF;
+            let srsrc = ((w1 >> 16) & 0x1F) * 4;
+            let ssamp = ((w1 >> 21) & 0x1F) * 4;
+            let tex_idx = (srsrc / 4) & 7;
+            let samp_idx = (ssamp / 4) & 3;
+            if op == 0x66 || op == 0x67 {
+                // bvh64 ray intersection
+                hlsl_stmt = format!("v[{vdata}] = asuint(1.0); /* image_bvh64_0x{op:02x} */");
+            } else {
+                hlsl_stmt = format!(
+                    "{{ float4 _ts = g_tex[{tex_idx}].SampleLevel(g_samp[{samp_idx}], float2(asfloat(v[{vaddr}]), asfloat(v[{}])), 0.0); v[{vdata}] = asuint(_ts.x); v[{}] = asuint(_ts.y); }}",
+                    (vaddr + 1) & 0xFF,
+                    (vdata + 1) & 0xFF
+                );
+            }
+            format!("mimg_0x{op:02x} v{vdata}, v{vaddr}, t#{tex_idx}, s#{samp_idx}")
         } else if (w0 >> 26) == 0x34 || (w0 >> 26) == 0x37 || (w0 >> 26) == 0x38 {
             len_words = 2;
             hlsl_stmt = format!("/* mem_0x{:02x} */", w0 >> 26);
@@ -432,7 +453,10 @@ pub fn lift_to_hlsl(bytes: &[u8], hint: ShaderStage) -> (ShaderStage, String, us
         insn_count,
         export_count
     );
+    hlsl.push_str("cbuffer PerDrawCB : register(b0) { uint4 g_cb0[64]; };\n");
     hlsl.push_str("ByteAddressBuffer g_cbuf : register(t0);\n");
+    hlsl.push_str("Texture2D<float4> g_tex[8] : register(t1);\n");
+    hlsl.push_str("SamplerState g_samp[4] : register(s0);\n");
     if stage == ShaderStage::Compute {
         hlsl.push_str("RWByteAddressBuffer g_out : register(u0);\n");
     }

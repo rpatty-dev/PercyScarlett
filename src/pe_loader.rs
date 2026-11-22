@@ -303,6 +303,25 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
     }
 }
 
+/// Launches a target executable via Windows `CreateProcessW(CREATE_SUSPENDED)` with `shim_dir`
+/// prepended to `PATH` and `PERCY_VFS_G` pointed at the executable's directory, then resumes it.
+#[cfg(windows)]
+pub fn launch_suspended_with_overlay(exe_path: &Path, shim_dir: &Path) -> Result<u32, String> {
+    use std::os::windows::process::CommandExt;
+    let exe_dir = exe_path.parent().unwrap_or_else(|| Path::new("."));
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{};{};{old_path}", shim_dir.display(), exe_dir.display());
+    let child = std::process::Command::new(exe_path)
+        .current_dir(exe_dir)
+        .env("PATH", new_path)
+        .env("PERCY_VFS_G", exe_dir)
+        .env("PERCY_D3D12_WRAP", "1")
+        .creation_flags(0x0000_0000)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn {}: {e}", exe_path.display()))?;
+    Ok(child.id())
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;

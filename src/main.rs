@@ -80,6 +80,20 @@ fn main() {
         Some("report") if args.len() >= 4 => {
             write_bringup_report(Path::new(&args[2]), Path::new(&args[3]));
         }
+        Some("launch") if args.len() >= 3 => {
+            #[cfg(windows)]
+            {
+                let exe_path = Path::new(&args[2]);
+                let shim_dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                    .unwrap_or_else(|| Path::new(".").to_path_buf());
+                match pe_loader::launch_suspended_with_overlay(exe_path, &shim_dir) {
+                    Ok(pid) => println!("Launched {} with PercyScarlett overlay (PID {pid})", exe_path.display()),
+                    Err(e) => eprintln!("Launch failed: {e}"),
+                }
+            }
+        }
         Some("run") if args.len() >= 3 => {
             #[cfg(windows)]
             {

@@ -341,6 +341,66 @@ pub unsafe extern "system" fn XAsyncGetResultSize(
     S_OK
 }
 
+#[repr(C)]
+pub struct XNetworkingConnectivityHint {
+    pub connectivity_level: u32,
+    pub connectivity_cost: u32,
+    pub iana_interface_type: u32,
+    pub network_initialized: u8,
+    pub approaching_data_limit: u8,
+    pub over_data_limit: u8,
+    pub roaming: u8,
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XNetworkingGetConnectivityHint(
+    hint: *mut XNetworkingConnectivityHint,
+) -> i32 {
+    if hint.is_null() {
+        return E_POINTER;
+    }
+    *hint = XNetworkingConnectivityHint {
+        connectivity_level: 1, // LocalAccess (offline-safe)
+        connectivity_cost: 1,  // Unrestricted
+        iana_interface_type: 6, // Ethernet
+        network_initialized: 1,
+        approaching_data_limit: 0,
+        over_data_limit: 0,
+        roaming: 0,
+    };
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XStoreCreateContext(
+    _user: *mut c_void,
+    out_ctx: *mut *mut c_void,
+) -> i32 {
+    if out_ctx.is_null() {
+        return E_POINTER;
+    }
+    *out_ctx = Box::into_raw(Box::new(TaskQueueHandle { magic: TQ_MAGIC })) as *mut c_void;
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XStoreCloseContextHandle(ctx: *mut c_void) {
+    XTaskQueueCloseHandle(ctx);
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XStoreQueryGameAndDlcPackageUpdatesAsync(
+    _ctx: *mut c_void,
+    async_block: *mut XAsyncBlock,
+) -> i32 {
+    if !async_block.is_null() {
+        if let Some(cb) = (*async_block).callback {
+            cb(async_block);
+        }
+    }
+    S_OK
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,6 +444,14 @@ mod tests {
             assert_eq!(&buf[..out_sz], b"HELLO");
             XGameSaveCloseContainer(cont);
             XGameSaveCloseProvider(prov);
+
+            let mut net = std::mem::zeroed::<XNetworkingConnectivityHint>();
+            assert_eq!(XNetworkingGetConnectivityHint(&mut net), S_OK);
+            assert_eq!(net.network_initialized, 1);
+            let mut store: *mut c_void = std::ptr::null_mut();
+            assert_eq!(XStoreCreateContext(user, &mut store), S_OK);
+            assert!(!store.is_null());
+            XStoreCloseContextHandle(store);
 
             XUserCloseHandle(user);
             XTaskQueueCloseHandle(q);

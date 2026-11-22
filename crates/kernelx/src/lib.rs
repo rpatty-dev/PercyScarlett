@@ -113,6 +113,63 @@ pub unsafe extern "system" fn FreeTitlePhysicalPages(
     1
 }
 
+#[no_mangle]
+pub unsafe extern "system" fn WaitOnAddress(
+    address: *const c_void,
+    compare_address: *const c_void,
+    address_size: usize,
+    _dw_milliseconds: u32,
+) -> i32 {
+    if address.is_null() || compare_address.is_null() {
+        return 0;
+    }
+    let equal = match address_size {
+        1 => *(address as *const u8) == *(compare_address as *const u8),
+        2 => *(address as *const u16) == *(compare_address as *const u16),
+        4 => *(address as *const u32) == *(compare_address as *const u32),
+        8 => *(address as *const u64) == *(compare_address as *const u64),
+        _ => false,
+    };
+    if !equal { 1 } else { 1 }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn WakeByAddressSingle(_address: *const c_void) {}
+
+#[no_mangle]
+pub unsafe extern "system" fn WakeByAddressAll(_address: *const c_void) {}
+
+#[no_mangle]
+pub unsafe extern "system" fn SetThreadAffinityMask(_thread: usize, mask: usize) -> usize {
+    mask.max(1)
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn SetThreadPriority(_thread: usize, _priority: i32) -> i32 {
+    1
+}
+
+pub fn rewrite_xbox_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    for (drive, env_k) in [
+        ("G:\\", "PERCY_VFS_G"),
+        ("g:\\", "PERCY_VFS_G"),
+        ("T:\\", "PERCY_VFS_T"),
+        ("t:\\", "PERCY_VFS_T"),
+        ("S:\\", "PERCY_VFS_S"),
+        ("s:\\", "PERCY_VFS_S"),
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(drive) {
+            if let Ok(root) = std::env::var(env_k) {
+                if !root.is_empty() {
+                    return format!("{}\\{}", root.trim_end_matches(['\\', '/']), rest);
+                }
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
