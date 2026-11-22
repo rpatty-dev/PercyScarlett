@@ -137,7 +137,18 @@ fn main() {
         Some("mascot") => {
             mascot::print_mascot_banner();
         }
-        Some("gui") => {
+        None | Some("gui") => {
+            #[cfg(windows)]
+            {
+                extern "system" {
+                    fn FreeConsole() -> i32;
+                }
+                if args.len() <= 1 {
+                    unsafe {
+                        FreeConsole();
+                    }
+                }
+            }
             if let Err(e) = gui::run_dashboard() {
                 eprintln!("GUI error: {e}");
             }
@@ -145,7 +156,8 @@ fn main() {
         _ => {
             mascot::print_mascot_banner();
             println!("Usage:");
-            println!("  percyscarlett gui                 (Xbox Series X Dashboard UI)");
+            println!("  percyscarlett                     (Launch Xbox Series X Dashboard UI)");
+            println!("  percyscarlett gui                 (Launch Xbox Series X Dashboard UI)");
             println!("  percyscarlett inspect <game.exe>");
             println!("  percyscarlett plan <game_dir>");
             println!("  percyscarlett verify-dlls <game_dir>");

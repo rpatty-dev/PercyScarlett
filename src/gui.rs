@@ -17,6 +17,177 @@ const CARD_BG: Color32 = Color32::from_rgb(22, 26, 35);
 const CARD_HOVER: Color32 = Color32::from_rgb(30, 36, 48);
 const BORDER_COL: Color32 = Color32::from_rgb(44, 52, 68);
 
+const REQUIRED_RUNTIME_FILES: &[&str] = &[
+    "kernelx.dll",
+    "d3d12_xs.dll",
+    "xmem.dll",
+    "xgameruntime.dll",
+    "dstorage.dll",
+    "GameInput.dll",
+    "xg_xs.dll",
+    "winrt_xs.dll",
+    "xaudio2_9.dll",
+    "dxcompiler.dll",
+    "dxil.dll",
+];
+
+fn app_install_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join("PercyScarlett"))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn count_installed_runtime_files() -> (usize, usize, PathBuf) {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let local_dir = app_install_dir();
+    let check_dir = if exe_dir.join("d3d12_xs.dll").exists() {
+        exe_dir
+    } else {
+        local_dir
+    };
+    let present = REQUIRED_RUNTIME_FILES
+        .iter()
+        .filter(|f| check_dir.join(f).exists())
+        .count();
+    (present, REQUIRED_RUNTIME_FILES.len(), check_dir)
+}
+
+fn create_start_menu_shortcut(app_dir: &std::path::Path) -> Result<PathBuf, String> {
+    let appdata = std::env::var("APPDATA").map_err(|_| "APPDATA not set".to_string())?;
+    let programs = PathBuf::from(appdata)
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs");
+    fs::create_dir_all(&programs).map_err(|e| e.to_string())?;
+    let lnk = programs.join("PercyScarlett.lnk");
+    let target = app_dir.join("percyscarlett.exe");
+    let ps = format!(
+        "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('{}'); $s.TargetPath = '{}'; $s.WorkingDirectory = '{}'; $s.IconLocation = '{},0'; $s.Description = 'PercyScarlett Xbox Series X|S Dashboard'; $s.Save()",
+        lnk.display(),
+        target.display(),
+        app_dir.display(),
+        target.display()
+    );
+    let out = silent_cmd("powershell")
+        .args(["-NoProfile", "-Command", &ps])
+        .output()
+        .map_err(|e| format!("Shortcut powershell error: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(lnk)
+}
+
+fn spawn_install_runtime_and_shortcut(
+    console: Arc<Mutex<String>>,
+    busy: Arc<Mutex<bool>>,
+    runtime_count: Arc<Mutex<(usize, usize, PathBuf)>>,
+    ctx: egui::Context,
+) {
+    {
+        let mut b = busy.lock().unwrap();
+        if *b {
+            return;
+        }
+        *b = true;
+    }
+    *console.lock().unwrap() = "Checking latest PercyScarlett release bundle...\n".into();
+    ctx.request_repaint();
+
+    std::thread::spawn(move || {
+        let res: Result<String, String> = (|| {
+            let (curl, null) = if cfg!(windows) { ("curl.exe", "NUL") } else { ("curl", "/dev/null") };
+            let mut ver = APP_VERSION.to_string();
+            if let Ok(out) = silent_cmd(curl)
+                .args(["-fsSL", "-o", null, "-w", "%{url_effective}", &format!("{REPO_RELEASES_URL}/latest")])
+                .output()
+            {
+                if out.status.success() {
+                    let eff = String::from_utf8_lossy(&out.stdout);
+                    if let Some((_, tag)) = eff.trim().rsplit_once("/tag/") {
+                        let v = tag.trim_start_matches(['v', 'V']);
+                        if !v.is_empty() {
+                            ver = v.to_string();
+                        }
+                    }
+                }
+            }
+
+            let install_dir = app_install_dir();
+            fs::create_dir_all(&install_dir).map_err(|e| e.to_string())?;
+            let tmp = std::env::temp_dir().join("percyscarlett_runtime_dl");
+            let _ = fs::remove_dir_all(&tmp);
+            fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+
+            let zip_p = tmp.join("bundle.zip");
+            let dl_url = format!("{REPO_RELEASES_URL}/download/v{ver}/PercyScarlett_v{ver}_Win64.zip");
+            *console.lock().unwrap() = format!("Downloading {dl_url}...\n");
+            ctx.request_repaint();
+
+            let dl = silent_cmd(curl)
+                .args(["-fsSL", "-o", zip_p.to_str().ok_or("bad zip path")?, &dl_url])
+                .output()
+                .map_err(|e| format!("curl error: {e}"))?;
+            if !dl.status.success() {
+                return Err(format!("Download failed ({}) for {dl_url}", dl.status));
+            }
+
+            *console.lock().unwrap() = format!("Extracting runtime files to {}...\n", install_dir.display());
+            ctx.request_repaint();
+            let ps_arg = format!(
+                "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
+                zip_p.display(),
+                install_dir.display()
+            );
+            let ex = silent_cmd("powershell")
+                .args(["-NoProfile", "-Command", &ps_arg])
+                .output()
+                .map_err(|e| format!("Expand error: {e}"))?;
+            if !ex.status.success() {
+                return Err("Archive extraction failed".into());
+            }
+
+            // Ensure current exe is also present in %LOCALAPPDATA%\PercyScarlett if zip lacked it, and copy DLLs next to current exe if desired
+            if let Ok(cur_exe) = std::env::current_exe() {
+                let target_exe = install_dir.join("percyscarlett.exe");
+                if !target_exe.exists() {
+                    let _ = fs::copy(&cur_exe, &target_exe);
+                }
+                if let Some(cur_dir) = cur_exe.parent() {
+                    if cur_dir != install_dir {
+                        for f in REQUIRED_RUNTIME_FILES {
+                            let src = install_dir.join(f);
+                            if src.exists() {
+                                let _ = fs::copy(&src, cur_dir.join(f));
+                            }
+                        }
+                    }
+                }
+            }
+
+            let lnk = create_start_menu_shortcut(&install_dir)?;
+            let _ = fs::remove_dir_all(&tmp);
+            Ok(format!(
+                "Installed PercyScarlett v{ver} + all 9 shim DLLs + DXC to {}\nStart Menu shortcut created: {}\n",
+                install_dir.display(),
+                lnk.display()
+            ))
+        })();
+
+        match res {
+            Ok(msg) => *console.lock().unwrap() = msg,
+            Err(err) => *console.lock().unwrap() = format!("Install error: {err}\n"),
+        }
+        *runtime_count.lock().unwrap() = count_installed_runtime_files();
+        *busy.lock().unwrap() = false;
+        ctx.request_repaint();
+    });
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DashTab {
     Home,
@@ -37,6 +208,7 @@ struct DashboardApp {
     console: Arc<Mutex<String>>,
     busy: Arc<Mutex<bool>>,
     update: Arc<Mutex<UpdateState>>,
+    runtime_count: Arc<Mutex<(usize, usize, PathBuf)>>,
     selected_tile: usize,
 }
 
@@ -219,6 +391,7 @@ impl DashboardApp {
             )),
             busy: Arc::new(Mutex::new(false)),
             update,
+            runtime_count: Arc::new(Mutex::new(count_installed_runtime_files())),
             selected_tile: 0,
         }
     }
@@ -326,6 +499,53 @@ impl eframe::App for DashboardApp {
             .show(ctx, |ui| {
                 match self.tab {
                     DashTab::Home => {
+                        let (rt_have, rt_total, rt_dir) = self.runtime_count.lock().unwrap().clone();
+                        if rt_have < rt_total {
+                            egui::Frame::NONE
+                                .fill(Color32::from_rgb(20, 46, 26))
+                                .stroke(Stroke::new(1.5_f32, XBOX_GREEN))
+                                .corner_radius(10.0_f32)
+                                .inner_margin(12.0)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "Standalone Mode ({rt_have}/{rt_total} runtime DLLs found) — Download shims & DXC and install to Windows Start Menu?"
+                                            ))
+                                            .strong()
+                                            .color(Color32::WHITE),
+                                        );
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            let dl_btn = egui::Button::new(
+                                                RichText::new("⬇ Download Files & Add to Start Menu").strong().color(Color32::BLACK),
+                                            )
+                                            .fill(XBOX_GREEN);
+                                            if ui.add_enabled(!is_busy, dl_btn).clicked() {
+                                                spawn_install_runtime_and_shortcut(
+                                                    Arc::clone(&self.console),
+                                                    Arc::clone(&self.busy),
+                                                    Arc::clone(&self.runtime_count),
+                                                    ctx.clone(),
+                                                );
+                                            }
+                                        });
+                                    });
+                                });
+                            ui.add_space(10.0);
+                        } else {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("Runtime Ready ({rt_have}/{rt_total} DLLs @ {})", rt_dir.display())).size(11.5).color(XBOX_GREEN));
+                                if ui.small_button("Re-download / Add to Start Menu").clicked() && !is_busy {
+                                    spawn_install_runtime_and_shortcut(
+                                        Arc::clone(&self.console),
+                                        Arc::clone(&self.busy),
+                                        Arc::clone(&self.runtime_count),
+                                        ctx.clone(),
+                                    );
+                                }
+                            });
+                            ui.add_space(6.0);
+                        }
                         ui.label(RichText::new("Jump Back In").strong().size(16.0).color(Color32::WHITE));
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
