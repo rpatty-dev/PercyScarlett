@@ -49,8 +49,60 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
    Allocated 16 MiB Scarlett physical test block at 0x1eb59000000 (active=16777216 B, blocks=1)
    ```
 4. **Live Instruction-Level RDNA2 -> HLSL -> Windows `DXBC` Compilation (`crates/d3d12_xs`)**
-   - Decodes GFX10.3 `SOP2`, `SOPP`, `VOP1`, `VOP2`, `VOPC`, `VOP3`, `SMEM`, `DS` (LDS), `EXP` (incl. Mesh `exp target=20` primitive detection), and inline/32-bit literal operands.
-   - Lifts instruction-by-instruction into HLSL (`VS`, `PS`, `CS`, `GS`, `MS`) and compiles live through Windows `System32\d3dcompiler_47.dll` (`D3DCompile`) into verified `DXBC` bytecode with FNV-1a disk caching (`PERCY_SHADER_CACHE`).
+   Decodes GFX10.3 `SOP2`, `SOPP`, `VOP1`, `VOP2`, `VOPC`, `VOP3`, `SMEM`, `DS` (LDS), and `EXP` (including Mesh `exp target=20` primitive detection), lifts per-instruction HLSL, and compiles live via `System32\d3dcompiler_47.dll` (`D3DCompile`) into `"DXBC"` bytecode with FNV-1a disk caching (`PERCY_SHADER_CACHE`):
+   ```hlsl
+   // PercyScarlett RDNA2 -> HLSL (ms, 5 insns, 1 exports)
+   s[0] = g_cbuf.Load(16u);
+   s[1] = g_cbuf.Load(20u);
+   v[1] = 0x3F800000u;
+   v[2] = asuint(asfloat(v[1]) + asfloat(v[0]));
+   /* exp_prim v[0,0,0] */
+   // s_endpgm
+   ```
+
+<details>
+<summary>Full Verbatim <code>cargo test --workspace</code> Output (15/15 Passing, 0 Warnings)</summary>
+
+```text
+     Running unittests src\lib.rs (target\debug\deps\d3d12_xs.exe)
+running 4 tests
+test tests::device_x_proxy_wraps_and_releases_cleanly ... ok
+test rdna2_hlsl::tests::decodes_rdna2_alu_smem_lds_and_detects_mesh_stage ... ok
+test tests::resolves_host_d3d12_exports_on_windows ... ok
+test tests::disk_shader_cache_roundtrip ... ok
+test result: ok. 4 passed; 0 failed
+
+     Running unittests src\lib.rs (target\debug\deps\dstorage.exe)
+test tests::dstorage_factory_and_queue_memory_copy_work ... ok
+
+     Running unittests src\lib.rs (target\debug\deps\GameInput.exe)
+test tests::gameinput_create_and_reading_work ... ok
+
+     Running unittests src\lib.rs (target\debug\deps\kernelx.exe)
+test tests::title_memory_status_works ... ok
+
+     Running unittests src\main.rs (target\debug\deps\percyscarlett.exe)
+test pe64::tests::parses_minimal_pe64_header ... ok
+test xmem::tests::allocates_and_frees_physical_pool_blocks ... ok
+test gdk::tests::resolves_kernel32_gettickcount_on_windows ... ok
+
+     Running tests\e2e_bringup.rs
+test scarlett_guest_exe_end_to_end_bringup ... ok
+
+     Running unittests src\lib.rs (target\debug\deps\winrt_xs.exe)
+test tests::hstring_create_read_delete_roundtrip ... ok
+
+     Running unittests src\lib.rs (target\debug\deps\xg_xs.exe)
+test tests::format_block_info_and_computer_work ... ok
+
+     Running unittests src\lib.rs (target\debug\deps\xgameruntime.exe)
+test tests::task_queue_and_xuser_work ... ok
+
+     Running unittests src\lib.rs (target\debug\deps\xmem.exe)
+test tests::xmem_alloc_free_and_stats_work ... ok
+```
+
+</details>
 
 ---
 
