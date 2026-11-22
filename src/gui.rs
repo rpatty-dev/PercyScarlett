@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -5,6 +6,9 @@ use std::sync::{Arc, Mutex};
 use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
 
 use crate::gdk;
+
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const REPO_RELEASES_URL: &str = "https://github.com/rpatty-dev/PercyScarlett/releases";
 
 const XBOX_GREEN: Color32 = Color32::from_rgb(82, 196, 64);
 const XBOX_DARK_GREEN: Color32 = Color32::from_rgb(16, 124, 16);
@@ -32,7 +36,153 @@ struct DashboardApp {
     mascot_tex: Option<egui::TextureHandle>,
     console: Arc<Mutex<String>>,
     busy: Arc<Mutex<bool>>,
+    update: Arc<Mutex<UpdateState>>,
     selected_tile: usize,
+}
+
+#[derive(Default)]
+struct UpdateState {
+    available: Option<(String, String)>,
+    checking: bool,
+    installing: bool,
+    show_modal: bool,
+    status: String,
+}
+
+pub fn parse_semver(s: &str) -> Option<(u32, u32, u32)> {
+    let trimmed = s.trim().trim_start_matches(['v', 'V']);
+    let core = trimmed.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let maj = parts.next()?.parse::<u32>().ok()?;
+    let min = parts.next()?.parse::<u32>().ok()?;
+    let pat = parts.next().unwrap_or("0").parse::<u32>().ok()?;
+    Some((maj, min, pat))
+}
+
+fn silent_cmd(prog: &str) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new(prog);
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        c
+    }
+    #[cfg(not(windows))]
+    Command::new(prog)
+}
+
+fn spawn_update_check(upd: Arc<Mutex<UpdateState>>, ctx: egui::Context) {
+    {
+        let mut g = upd.lock().unwrap();
+        if g.checking || g.installing {
+            return;
+        }
+        g.checking = true;
+    }
+    std::thread::spawn(move || {
+        let (curl, null) = if cfg!(windows) { ("curl.exe", "NUL") } else { ("curl", "/dev/null") };
+        let out = silent_cmd(curl)
+            .args(["-fsSL", "-o", null, "-w", "%{url_effective}", &format!("{REPO_RELEASES_URL}/latest")])
+            .output();
+        let mut found = None;
+        if let Ok(res) = out {
+            if res.status.success() {
+                let eff = String::from_utf8_lossy(&res.stdout).trim().to_string();
+                if let Some((_, tag)) = eff.rsplit_once("/tag/") {
+                    if let (Some(rem), Some(cur)) = (parse_semver(tag), parse_semver(APP_VERSION)) {
+                        if rem > cur {
+                            let ver = tag.trim_start_matches(['v', 'V']).to_string();
+                            found = Some((ver, eff));
+                        }
+                    }
+                }
+            }
+        }
+        {
+            let mut g = upd.lock().unwrap();
+            g.checking = false;
+            g.available = found;
+        }
+        ctx.request_repaint();
+    });
+}
+
+fn spawn_install_update(ver: String, upd: Arc<Mutex<UpdateState>>, ctx: egui::Context) {
+    {
+        let mut g = upd.lock().unwrap();
+        if g.installing {
+            return;
+        }
+        g.installing = true;
+        g.status = format!("Downloading v{ver}...");
+    }
+    ctx.request_repaint();
+    std::thread::spawn(move || {
+        let res: Result<(), String> = (|| {
+            let tmp = std::env::temp_dir().join("percyscarlett_self_update");
+            let _ = fs::remove_dir_all(&tmp);
+            fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+            let zip_p = tmp.join("update.zip");
+            let dl_url = format!("{REPO_RELEASES_URL}/download/v{ver}/PercyScarlett_v{ver}_Win64.zip");
+            let dl = silent_cmd("curl.exe")
+                .args(["-fsSL", "-o", zip_p.to_str().ok_or("bad zip path")?, &dl_url])
+                .output()
+                .map_err(|e| format!("curl error: {e}"))?;
+            if !dl.status.success() {
+                return Err(format!("Download failed ({})", dl.status));
+            }
+            {
+                let mut g = upd.lock().unwrap();
+                g.status = format!("Extracting v{ver}...");
+            }
+            ctx.request_repaint();
+            let ps_arg = format!(
+                "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
+                zip_p.display(),
+                tmp.display()
+            );
+            let ex = silent_cmd("powershell")
+                .args(["-NoProfile", "-Command", &ps_arg])
+                .output()
+                .map_err(|e| format!("Expand error: {e}"))?;
+            if !ex.status.success() {
+                return Err("Archive extraction failed".into());
+            }
+            let new_exe = tmp.join("percyscarlett.exe");
+            let head = fs::read(&new_exe).map_err(|_| "percyscarlett.exe missing in release zip".to_string())?;
+            if head.len() < 100_000 || !head.starts_with(b"MZ") {
+                return Err("Downloaded binary looks invalid".into());
+            }
+            let cur_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let cur_dir = cur_exe.parent().ok_or("no parent dir")?;
+            let old_exe = cur_exe.with_extension("exe.old");
+            let _ = fs::remove_file(&old_exe);
+            fs::rename(&cur_exe, &old_exe).map_err(|e| format!("Rename failed: {e}"))?;
+            if let Err(e) = fs::copy(&new_exe, &cur_exe) {
+                let _ = fs::rename(&old_exe, &cur_exe);
+                return Err(format!("Replace failed: {e}"));
+            }
+            // Refresh companion shim DLLs & sample if present in the zip
+            if let Ok(rd) = fs::read_dir(&tmp) {
+                for ent in rd.flatten() {
+                    let p = ent.path();
+                    let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                    if name.ends_with(".dll") || name.eq_ignore_ascii_case("scarlett_sample.exe") {
+                        let _ = fs::copy(&p, cur_dir.join(name));
+                    }
+                }
+            }
+            let _ = fs::remove_dir_all(&tmp);
+            Command::new(&cur_exe).arg("gui").spawn().map_err(|e| format!("Relaunch failed: {e}"))?;
+            std::process::exit(0);
+        })();
+        if let Err(err) = res {
+            let mut g = upd.lock().unwrap();
+            g.installing = false;
+            g.status = err;
+            ctx.request_repaint();
+        }
+    });
 }
 
 impl DashboardApp {
@@ -41,8 +191,11 @@ impl DashboardApp {
         visuals.panel_fill = BG_DARK;
         visuals.window_fill = CARD_BG;
         visuals.selection.bg_fill = XBOX_DARK_GREEN;
-        visuals.selection.stroke = Stroke::new(1.5, XBOX_GREEN);
+        visuals.selection.stroke = Stroke::new(1.5_f32, XBOX_GREEN);
         cc.egui_ctx.set_visuals(visuals);
+
+        let update = Arc::new(Mutex::new(UpdateState::default()));
+        spawn_update_check(Arc::clone(&update), cc.egui_ctx.clone());
 
         let mascot_tex = mascot_rgba.map(|(raw, w, h)| {
             cc.egui_ctx.load_texture(
@@ -65,6 +218,7 @@ impl DashboardApp {
                 "PercyScarlett Series X Dashboard ready. Select a tile or action below.\n".into(),
             )),
             busy: Arc::new(Mutex::new(false)),
+            update,
             selected_tile: 0,
         }
     }
@@ -145,7 +299,21 @@ impl eframe::App for DashboardApp {
                         }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new("● PercyPlayer · Scarlett").size(12.0).color(XBOX_GREEN));
+                        ui.label(RichText::new(format!("v{APP_VERSION} · PercyPlayer")).size(12.0).color(XBOX_GREEN));
+                        let upd_avail = self.update.lock().unwrap().available.clone();
+                        if let Some((new_ver, _)) = upd_avail {
+                            let pill = egui::Button::new(
+                                RichText::new(format!("★ Update Available: v{new_ver}"))
+                                    .size(11.5)
+                                    .strong()
+                                    .color(Color32::BLACK),
+                            )
+                            .fill(Color32::from_rgb(255, 196, 64))
+                            .corner_radius(12.0_f32);
+                            if ui.add(pill).clicked() {
+                                self.update.lock().unwrap().show_modal = true;
+                            }
+                        }
                         if is_busy {
                             ui.spinner();
                         }
@@ -288,6 +456,50 @@ impl eframe::App for DashboardApp {
                         });
                     });
             });
+
+        let (show_modal, avail, installing, upd_status) = {
+            let g = self.update.lock().unwrap();
+            (g.show_modal, g.available.clone(), g.installing, g.status.clone())
+        };
+        if show_modal {
+            if let Some((new_ver, rel_url)) = avail {
+                let mut open = true;
+                egui::Window::new("Update Available")
+                    .open(&mut open)
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.label(RichText::new(format!("Installed: v{APP_VERSION} -> Latest: v{new_ver}")).strong());
+                        ui.add_space(6.0);
+                        if !upd_status.is_empty() {
+                            ui.label(RichText::new(&upd_status).color(XBOX_GREEN));
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.add_enabled(!installing, egui::Button::new("Download & Install")).clicked() {
+                                spawn_install_update(new_ver.clone(), Arc::clone(&self.update), ctx.clone());
+                            }
+                            if ui.button("Open Release Page").clicked() {
+                                ctx.open_url(egui::OpenUrl::new_tab(rel_url));
+                            }
+                        });
+                    });
+                if !open {
+                    self.update.lock().unwrap().show_modal = false;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semver_compare_works() {
+        assert!(parse_semver("v0.2.1") > parse_semver("0.2.0"));
+        assert_eq!(parse_semver("v1.4.6"), Some((1, 4, 6)));
     }
 }
 
