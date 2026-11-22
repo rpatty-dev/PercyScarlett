@@ -137,6 +137,9 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
     let mut off = 0usize;
     while off + 4 <= bytes.len() {
         let w0 = read_u32(bytes, off).unwrap();
+        if w0 == 0xEFCD_AB89 || w0 == 0x89AB_CDEF {
+            break;
+        }
         let w1 = read_u32(bytes, off + 4).unwrap_or(0);
         let mut len_words = 1usize;
         let mut is_known = true;
@@ -495,9 +498,14 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                     hlsl_stmt = format!("v[{vdst}] = ({} << 16) | ({} & 0xFFFFu);", fmt_src(s0, None, false), fmt_src(s1, None, false));
                     format!("v_perm_b32 v{vdst}")
                 }
-                0x36F => {
+                0x36F | 0x346 => {
                     hlsl_stmt = format!("v[{vdst}] = ({} << ({} & 31u)) + {};", fmt_src(s0, None, false), fmt_src(s1, None, false), fmt_src(s2, None, false));
                     format!("v_lshl_add_u32 v{vdst}")
+                }
+                0x377 | 0x378 => {
+                    uses_wave = true;
+                    hlsl_stmt = format!("v[{vdst}] = WaveReadLaneAt({}, {});", fmt_src(s0, None, false), fmt_src(s1, None, false));
+                    format!("v_permlane_0x{op:03x} v{vdst}")
                 }
                 0x169 => {
                     // v_mul_lo_u32
@@ -681,6 +689,39 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                 hlsl_stmt = format!("v[{vdata}] = g_cbuf.Load((v[{vaddr}] + {off12}u) & 0xFFFCu);");
                 format!("buf_load v{vdata}, v{vaddr}, off={off12}")
             }
+        } else if (w0 >> 26) == 0x33 {
+            // VOP3P (64-bit packed FP16/I16/dot/fma_mix)
+            len_words = 2;
+            let op = (w0 >> 16) & 0x7F;
+            let vdst = w0 & 0xFF;
+            let s0 = w1 & 0x1FF;
+            let s1 = (w1 >> 9) & 0x1FF;
+            let s2 = (w1 >> 18) & 0x1FF;
+            match op {
+                0x00..=0x1F | 0x20..=0x27 => {
+                    // v_pk_* / v_dot* / v_fma_mix*
+                    hlsl_stmt = format!(
+                        "v[{vdst}] = asuint({} * {} + {});",
+                        fmt_src(s0, None, true),
+                        fmt_src(s1, None, true),
+                        fmt_src(s2, None, true)
+                    );
+                    format!("vop3p_0x{op:02x} v{vdst}")
+                }
+                _ => {
+                    is_known = false;
+                    hlsl_stmt = format!("/* UNKNOWN vop3p_0x{op:02x} */");
+                    format!("vop3p_0x{op:02x} v{vdst}")
+                }
+            }
+        } else if (w0 >> 26) == 0x32 {
+            // VINTRP (GFX10.3: 32-bit, 1 word)
+            let op = (w0 >> 16) & 0x3;
+            let vdst = (w0 >> 18) & 0xFF;
+            let attr = (w0 >> 10) & 0x3F;
+            let chan = (w0 >> 8) & 0x3;
+            hlsl_stmt = format!("v[{vdst}] = asuint(p0[{chan}]); /* v_interp attr{attr}.{chan} */");
+            format!("v_interp_{op} v{vdst}, attr{attr}.{chan}")
         } else if (w0 >> 26) == 0x34 || (w0 >> 26) == 0x37 {
             // VINTERP / FLAT / GLOBAL
             len_words = 2;
@@ -811,7 +852,7 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
             let src0 = w0 & 0x1FF;
             let vsrc1 = (w0 >> 9) & 0xFF;
             let vdst = (w0 >> 17) & 0xFF;
-            let always_lit = matches!(op, 0x20 | 0x21 | 0x2C | 0x2D);
+            let always_lit = matches!(op, 0x20 | 0x21 | 0x2C | 0x2D | 0x37 | 0x38);
             let lit = if always_lit || matches!(src0, 249 | 250 | 255) {
                 len_words = 2;
                 if always_lit || src0 == 255 { Some(w1) } else { None }
@@ -825,7 +866,7 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
             let imm_f = format!("asfloat(0x{:08x}u)", w1);
             hlsl_stmt = match op {
                 0x00 => format!("v[{vdst}] = ((vcc & 1u) != 0u) ? {b_u} : {a_u};"),      // v_cndmask_b32
-                0x01 => format!("v[{vdst}] = asuint(asfloat(v[{vdst}]) + {a_f} * {b_f});"), // v_dot2c_f32_f16
+                0x01 | 0x02 => format!("v[{vdst}] = asuint(asfloat(v[{vdst}]) + {a_f} * {b_f});"), // v_dot2c_f32_f16 / v_dot2c_f16
                 0x03 => format!("v[{vdst}] = asuint({a_f} + {b_f});"),                   // v_add_f32
                 0x04 => format!("v[{vdst}] = asuint({a_f} - {b_f});"),                   // v_sub_f32
                 0x05 => format!("v[{vdst}] = asuint({b_f} - {a_f});"),                   // v_subrev_f32
@@ -851,6 +892,18 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                 0x25 => format!("v[{vdst}] = {a_u} + {b_u};"),                           // v_add_nc_u32
                 0x26 => format!("v[{vdst}] = {a_u} - {b_u};"),                           // v_sub_nc_u32
                 0x27 => format!("v[{vdst}] = {b_u} - {a_u};"),                           // v_subrev_nc_u32
+                0x2A => format!("v[{vdst}] = asuint(asfloat(v[{vdst}]) + {a_f} * {b_f});"), // v_fmac_legacy_f32
+                0x2F => format!("v[{vdst}] = (f32tof16({a_f}) & 0xFFFFu) | ((f32tof16({b_f}) & 0xFFFFu) << 16);"), // v_cvt_pkrtz_f16_f32
+                0x32 => format!("v[{vdst}] = f32tof16(f16tof32({a_u} & 0xFFFFu) + f16tof32({b_u} & 0xFFFFu));"), // v_add_f16
+                0x33 => format!("v[{vdst}] = f32tof16(f16tof32({a_u} & 0xFFFFu) - f16tof32({b_u} & 0xFFFFu));"), // v_sub_f16
+                0x34 => format!("v[{vdst}] = f32tof16(f16tof32({b_u} & 0xFFFFu) - f16tof32({a_u} & 0xFFFFu));"), // v_subrev_f16
+                0x35 => format!("v[{vdst}] = f32tof16(f16tof32({a_u} & 0xFFFFu) * f16tof32({b_u} & 0xFFFFu));"), // v_mul_f16
+                0x36 => format!("v[{vdst}] = f32tof16(f16tof32(v[{vdst}] & 0xFFFFu) + f16tof32({a_u} & 0xFFFFu) * f16tof32({b_u} & 0xFFFFu));"), // v_fmac_f16
+                0x37 => format!("v[{vdst}] = f32tof16(f16tof32({a_u} & 0xFFFFu) * f16tof32({w1}u & 0xFFFFu) + f16tof32({b_u} & 0xFFFFu));"), // v_fmamk_f16
+                0x38 => format!("v[{vdst}] = f32tof16(f16tof32({a_u} & 0xFFFFu) * f16tof32({b_u} & 0xFFFFu) + f16tof32({w1}u & 0xFFFFu));"), // v_fmaak_f16
+                0x39 => format!("v[{vdst}] = f32tof16(max(f16tof32({a_u} & 0xFFFFu), f16tof32({b_u} & 0xFFFFu)));"), // v_max_f16
+                0x3A => format!("v[{vdst}] = f32tof16(min(f16tof32({a_u} & 0xFFFFu), f16tof32({b_u} & 0xFFFFu)));"), // v_min_f16
+                0x3B => format!("v[{vdst}] = f32tof16(ldexp(f16tof32({a_u} & 0xFFFFu), asint({b_u})));"), // v_ldexp_f16
                 _ => {
                     is_known = false;
                     format!("/* UNKNOWN vop2_0x{op:02x} */")

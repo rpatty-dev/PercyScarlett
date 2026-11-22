@@ -43,9 +43,11 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
 | **Disk Overhead** | **0 GB** (NTFS junctions + hardlinks) | ~350 GB extracted intermediates |
 | **CPU Execution** | **Native x86-64** (`machine=0x8664`) | Native / static recompile |
 | **Shipped Sidecar DLLs** | **6/6 live-loaded on Win11 (`LoadLibraryW`)** | Untested |
-| **Compiled Shim DLLs** | **9 Rust `cdylib` DLLs** (`22/22` tests passing, `0` warnings) | Skeleton / Incomplete |
+| **Compiled Shim DLLs** | **9 Rust `cdylib` DLLs** (`28/28` tests passing, `0` warnings) | Skeleton / Incomplete |
 | **PE32+ Loader** | **In-process `.reloc`, sanitized `.pdata`, static `.tls` (`gs:[0x58]`), TLS callbacks & missing-import audit** | Basic mapper |
-| **Shader Recompiler** | **Clean-room RDNA2 -> HLSL (`SOPP` CFG + Wave64 intrinsics + `s_code_end`) -> SM 6.6 DXIL (`dxcompiler.dll`) + DXBC** (`21,522/21,522` = **100.0%** on real TheBig6 😉 shaders) | Partial / External |
+| **Unmodified Scarlett Samples** | **6/6 Scarlett GDKX samples booted & running live** (`SimpleCompute`, `SimpleTriangle`, `SimpleLighting`, `SimpleTexture`, `SimpleBezier`, `SimpleInstancing`) | Untested / Partial |
+| **Shader Recompiler** | **Strict clean-room RDNA2 -> HLSL (fails on unknown ops) -> SM 6.6 DXIL (`dxcompiler.dll`)** (`489/500` = **97.8%** on `--limit 500`; `3,060/21,522` full corpus; **2/2 hardware GPU compute reference tests bit-exact**) | Partial / External |
+| **System Tray (`-headless`)** | **`percyscarlett -headless` detaches console & lives in Windows System Tray** (`Shell_NotifyIconW`) | CLI only |
 | **Day-1 Crash Telemetry** | **Built-in VEH fault logger** + `PERCY_XMEM_LOG` + `PERCY_D3D12_LOG` + `report.json` | External debugger required |
 | **Xbox VFS & Auto-Stubs** | **`G:/T:/S:` rewrite** + `percyscarlett stubgen` | Manual |
 
@@ -71,12 +73,24 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
    ```text
    Allocated 16 MiB Scarlett physical test block at 0x1eb59000000 (active=16777216 B, blocks=1)
    ```
-4. **Live TheBig6 😉 21,522-Shader SM 6.6 DXIL Benchmark (`percyscarlett bench-shaders "<build_dir>\shaders.rpf" --dxil`)**
-   Decodes GFX10.3 `SOP2`, `SOPP`, `VOP1`, `VOP2`, `VOPC`, `VOP3`, `SMEM`, `DS` (LDS), and `EXP` (including Mesh `exp target=20` primitive detection), lifts per-instruction HLSL, and compiles live via `dxcompiler.dll` (`IDxcCompiler3::Compile` SM 6.6 DXIL) and `System32\d3dcompiler_47.dll` (`D3DCompile` DXBC) with FNV-1a disk caching (`PERCY_SHADER_CACHE`):
+4. **Strict RDNA2 → SM 6.6 DXIL & Hardware GPU Compute Reference (`d3d12_xs::rdna2_hlsl` + `compute_exec.rs`)**
+   Zero silent fallbacks: `lift_to_hlsl_strict` rejects any unrecognized instruction (`strict_lift_rejects_unknown_opcodes`). Decodes GFX10.3 + Scarlett GFX10.1 (`VOP1`/`VOP2`/`VOPC`/`VOP3`/`VOP3P`/`VINTRP`/`SOP1`/`SOP2`/`SOPK`/`SOPC`/`SOPP`/`SMEM`/`DS`/`EXP`/`MUBUF`) and verifies real D3D12 hardware GPU compute execution (`Dispatch`) bit-for-bit against CPU reference:
    ```text
-   PS09 Shaders: total=21522, benchmarked=21522, lifted=21522/21522 (100.0%) in 29.27s
-   Stages: VS=89 PS=7730 CS=51 Mesh=13588 RT=64
-   DXIL SM 6.6 (dxcompiler.dll): ok=21522/21522 (100.0%), fail=0
+   PS09 Shaders (full corpus): total=21522, strict_lifted=3060/21522 (14.2%) in 13.55s
+   Stages: VS=1345 PS=8710 CS=3905 Mesh=7498 RT=64
+   DXIL SM 6.6 (dxcompiler.dll, --limit 500): ok=489/500 (97.8%), fail=11
+   test compute_exec::tests::executes_lifted_rdna2_compute_shader_on_hardware_gpu_and_matches_reference ... ok
+   test compute_exec::tests::executes_rdna2_loop_with_sopp_branch_on_hardware_gpu ... ok
+   ```
+5. **6/6 Unmodified Scarlett GDKX Samples Booted Live (`percyscarlett run`)**
+   With `DeviceXProxy` x64 `ID3D12Device` forwarders, `DxgiDeviceProxy` (`IDXGIDevice`/`1`/`2`), `XSystemGetDeviceType() = 7` (Xbox Series X), `XGameRuntimeInitialize`, and `RegisterAppStateChangeNotification`:
+   ```text
+   SimpleCompute_GDKX.exe: BOOTED & RUNNING
+   SimpleTriangle_GDKX.exe: BOOTED & RUNNING
+   SimpleLighting_GDKX.exe: BOOTED & RUNNING
+   SimpleTexture_GDKX.exe: BOOTED & RUNNING
+   SimpleBezier_GDKX.exe: BOOTED & RUNNING
+   SimpleInstancing_GDKX.exe: BOOTED & RUNNING
    ```
    Sample lifted Mesh shader:
    ```hlsl
