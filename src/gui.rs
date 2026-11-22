@@ -3,24 +3,22 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-use eframe::egui::{self, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
 use crate::gdk;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const REPO_RELEASES_URL: &str = "https://github.com/rpatty-dev/PercyScarlett/releases";
 
-// Night-sky sunset palette with a console-style green for "ready" states.
-const NIGHT_TOP: Color32 = Color32::from_rgb(34, 14, 52);
-const NIGHT_BOTTOM: Color32 = Color32::from_rgb(8, 6, 16);
-const PINK: Color32 = Color32::from_rgb(255, 56, 140);
-const ORANGE: Color32 = Color32::from_rgb(255, 150, 60);
-const PURPLE: Color32 = Color32::from_rgb(110, 46, 190);
-const TEAL: Color32 = Color32::from_rgb(0, 200, 205);
-const READY_GREEN: Color32 = Color32::from_rgb(82, 196, 64);
-const CARD_BG: Color32 = Color32::from_rgba_premultiplied(20, 14, 34, 220);
-const BORDER_COL: Color32 = Color32::from_rgb(70, 48, 100);
-const TEXT_DIM: Color32 = Color32::from_rgb(200, 186, 220);
+// Three colours from the logo: black, Xbox green, white. Surfaces are tints of the black.
+const BLACK: Color32 = Color32::from_rgb(11, 12, 11);
+const INSET: Color32 = Color32::from_rgb(7, 8, 7);
+const SURFACE: Color32 = Color32::from_rgb(21, 23, 21);
+const SURFACE_HI: Color32 = Color32::from_rgb(31, 34, 31);
+const LINE: Color32 = Color32::from_rgb(38, 42, 38);
+const GREEN: Color32 = Color32::from_rgb(92, 194, 79);
+const WHITE: Color32 = Color32::from_rgb(240, 242, 238);
+const DIM: Color32 = Color32::from_rgb(142, 148, 140);
 
 const REQUIRED_RUNTIME_FILES: &[&str] = &[
     "kernelx.dll",
@@ -238,6 +236,7 @@ struct DashboardApp {
     update: Arc<Mutex<UpdateState>>,
     runtime_count: Arc<Mutex<(usize, usize, PathBuf)>>,
     selected_tile: usize,
+    tab_switches: f32,
 }
 
 #[derive(Default)]
@@ -394,22 +393,7 @@ fn spawn_install_update(ver: String, upd: Arc<Mutex<UpdateState>>, ctx: egui::Co
 
 impl DashboardApp {
     fn new(cc: &eframe::CreationContext<'_>, mascot_rgba: Option<(Vec<u8>, u32, u32)>) -> Self {
-        let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = NIGHT_BOTTOM;
-        visuals.window_fill = Color32::from_rgb(26, 16, 42);
-        visuals.window_stroke = Stroke::new(1.0_f32, PINK);
-        visuals.extreme_bg_color = Color32::from_rgb(12, 8, 22);
-        visuals.selection.bg_fill = PINK.gamma_multiply(0.6);
-        visuals.selection.stroke = Stroke::new(1.5_f32, Color32::WHITE);
-        visuals.hyperlink_color = TEAL;
-        for w in [&mut visuals.widgets.inactive, &mut visuals.widgets.hovered, &mut visuals.widgets.active] {
-            w.corner_radius = egui::CornerRadius::same(4);
-        }
-        visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(44, 28, 70);
-        visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(70, 36, 104);
-        visuals.widgets.hovered.bg_stroke = Stroke::new(1.5_f32, Color32::WHITE);
-        visuals.widgets.active.weak_bg_fill = PINK;
-        cc.egui_ctx.set_visuals(visuals);
+        install_theme(&cc.egui_ctx);
 
         let update = Arc::new(Mutex::new(UpdateState::default()));
         spawn_update_check(Arc::clone(&update), cc.egui_ctx.clone());
@@ -438,6 +422,7 @@ impl DashboardApp {
             update,
             runtime_count: Arc::new(Mutex::new(count_installed_runtime_files())),
             selected_tile: 0,
+            tab_switches: 0.0,
         }
     }
 
@@ -484,66 +469,121 @@ impl DashboardApp {
     }
 }
 
-/// Four-corner colour gradient over `rect` (tl, tr, br, bl).
-fn gradient(rect: Rect, c: [Color32; 4]) -> egui::Shape {
-    let mut m = egui::Mesh::default();
-    m.colored_vertex(rect.left_top(), c[0]);
-    m.colored_vertex(rect.right_top(), c[1]);
-    m.colored_vertex(rect.right_bottom(), c[2]);
-    m.colored_vertex(rect.left_bottom(), c[3]);
-    m.add_triangle(0, 1, 2);
-    m.add_triangle(0, 2, 3);
-    egui::Shape::mesh(m)
+const SEMIBOLD: &str = "semibold";
+
+fn semibold(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(SEMIBOLD.into()))
 }
 
-/// Sunset hero art: purple -> pink -> orange sky with a striped setting sun.
-fn hero_art(rect: Rect) -> egui::Shape {
-    let mid = rect.left() + rect.width() * 0.55;
-    let left = Rect::from_min_max(rect.min, Pos2::new(mid, rect.bottom()));
-    let right = Rect::from_min_max(Pos2::new(mid, rect.top()), rect.max);
-    let deep = PURPLE.gamma_multiply(0.7);
-    let mut shapes = vec![
-        gradient(left, [deep, PINK, PINK, deep]),
-        gradient(right, [PINK, ORANGE, ORANGE, PINK]),
-    ];
-    let r = rect.height() * 0.62;
-    let c = Pos2::new(rect.right() - r - 40.0, rect.bottom() + r * 0.25);
-    shapes.push(egui::Shape::circle_filled(c, r, Color32::from_rgb(255, 214, 120)));
-    for k in 0..5 {
-        let y = c.y - r * 0.15 - k as f32 * r * 0.16;
-        let band = Rect::from_min_max(Pos2::new(c.x - r, y - 2.0 - k as f32 * 0.4), Pos2::new(c.x + r, y));
-        shapes.push(egui::Shape::rect_filled(band, 0.0_f32, ORANGE));
+/// Read the first font file found in the user or system font folders.
+fn load_system_font(names: &[&str]) -> Option<Vec<u8>> {
+    let dirs: Vec<PathBuf> = [
+        std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(r"Microsoft\Windows\Fonts")),
+        std::env::var_os("WINDIR").map(|d| PathBuf::from(d).join("Fonts")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    names.iter().find_map(|n| dirs.iter().find_map(|d| fs::read(d.join(n)).ok()))
+}
+
+/// SF Pro Display is loaded from the installed fonts, never bundled (Apple licence);
+/// Segoe UI Variable / Segoe UI is the fallback on machines without it.
+fn install_theme(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let regular = load_system_font(&["SF-Pro-Display-Regular.otf", "SegUIVar.ttf", "segoeui.ttf"]);
+    let semi = load_system_font(&["SF-Pro-Display-Semibold.otf", "seguisb.ttf"]);
+    if let Some(r) = regular {
+        fonts.font_data.insert("ui".into(), Arc::new(egui::FontData::from_owned(r)));
+        fonts.families.get_mut(&FontFamily::Proportional).unwrap().insert(0, "ui".into());
     }
-    shapes.push(gradient(rect, [Color32::TRANSPARENT, Color32::TRANSPARENT, NIGHT_BOTTOM.gamma_multiply(0.5), NIGHT_BOTTOM.gamma_multiply(0.5)]));
-    egui::Shape::Vec(shapes)
+    let mut semi_family = Vec::new();
+    if let Some(s) = semi {
+        fonts.font_data.insert("ui-semibold".into(), Arc::new(egui::FontData::from_owned(s)));
+        semi_family.push("ui-semibold".to_string());
+    }
+    semi_family.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
+    fonts.families.insert(FontFamily::Name(SEMIBOLD.into()), semi_family);
+    ctx.set_fonts(fonts);
+
+    let mut style = (*ctx.style()).clone();
+    style.text_styles = [
+        (egui::TextStyle::Small, FontId::proportional(11.5)),
+        (egui::TextStyle::Body, FontId::proportional(14.0)),
+        (egui::TextStyle::Button, FontId::proportional(14.0)),
+        (egui::TextStyle::Heading, semibold(22.0)),
+        (egui::TextStyle::Monospace, FontId::monospace(12.5)),
+    ]
+    .into();
+    style.spacing.item_spacing = Vec2::new(8.0, 8.0);
+    style.spacing.button_padding = Vec2::new(14.0, 7.0);
+    style.spacing.interact_size.y = 30.0;
+    style.animation_time = 0.18;
+
+    let v = &mut style.visuals;
+    *v = egui::Visuals::dark();
+    v.panel_fill = BLACK;
+    v.window_fill = SURFACE;
+    v.window_stroke = Stroke::new(1.0_f32, LINE);
+    v.window_corner_radius = egui::CornerRadius::same(14);
+    v.window_shadow = egui::Shadow { offset: [0, 12], blur: 32, spread: 0, color: Color32::from_black_alpha(160) };
+    v.popup_shadow = v.window_shadow;
+    v.extreme_bg_color = INSET;
+    v.faint_bg_color = SURFACE;
+    v.hyperlink_color = GREEN;
+    v.selection.bg_fill = GREEN.gamma_multiply(0.35);
+    v.selection.stroke = Stroke::new(1.0_f32, GREEN);
+    v.text_cursor.stroke = Stroke::new(2.0_f32, GREEN);
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, WHITE);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE);
+    for (w, fill) in [
+        (&mut v.widgets.inactive, SURFACE_HI),
+        (&mut v.widgets.hovered, mix(SURFACE_HI, WHITE, 0.08)),
+        (&mut v.widgets.active, mix(SURFACE_HI, GREEN, 0.35)),
+        (&mut v.widgets.open, SURFACE_HI),
+    ] {
+        w.bg_fill = fill;
+        w.weak_bg_fill = fill;
+        w.bg_stroke = Stroke::NONE;
+        w.fg_stroke = Stroke::new(1.5_f32, WHITE);
+        w.corner_radius = egui::CornerRadius::same(8);
+        w.expansion = 0.0;
+    }
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, LINE);
+    ctx.set_style(style);
+}
+
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
 fn card() -> egui::Frame {
-    egui::Frame::NONE
-        .fill(CARD_BG)
-        .stroke(Stroke::new(1.0_f32, BORDER_COL))
-        .corner_radius(6.0_f32)
-        .inner_margin(14.0)
+    egui::Frame::NONE.fill(SURFACE).corner_radius(14.0_f32).inner_margin(20.0)
 }
 
 fn heading(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).strong().size(17.0).color(Color32::WHITE));
-    ui.add_space(6.0);
+    ui.label(RichText::new(text).font(semibold(18.0)).color(WHITE));
+    ui.add_space(4.0);
+}
+
+fn primary(text: &str) -> egui::Button<'static> {
+    egui::Button::new(RichText::new(text).font(semibold(14.0)).color(BLACK))
+        .fill(GREEN)
+        .corner_radius(8.0_f32)
 }
 
 struct Tile {
     title: &'static str,
     sub: &'static str,
     glyph: &'static str,
-    from: Color32,
-    to: Color32,
 }
 
 const TILES: [Tile; 4] = [
-    Tile { title: "Launch Overlay", sub: "Start the target .exe with the shim overlay", glyph: "▶", from: PINK, to: ORANGE },
-    Tile { title: "Verify Sidecars", sub: "Check the build folder's Xbox DLLs load", glyph: "✔", from: PURPLE, to: PINK },
-    Tile { title: "Benchmark Shaders", sub: "Recompile 500 RDNA2 shaders to DXIL", glyph: "⚡", from: ORANGE, to: PURPLE },
-    Tile { title: "Probe XMem", sub: "Allocate a 16 MiB physical test block", glyph: "💾", from: TEAL, to: PURPLE },
+    Tile { title: "Launch Overlay", sub: "Start the target .exe with the shim overlay", glyph: "▶" },
+    Tile { title: "Verify Sidecars", sub: "Check the build folder's Xbox DLLs load", glyph: "✔" },
+    Tile { title: "Benchmark Shaders", sub: "Recompile 500 RDNA2 shaders to DXIL", glyph: "⚡" },
+    Tile { title: "Probe XMem", sub: "Allocate a 16 MiB physical test block", glyph: "💾" },
 ];
 
 impl DashboardApp {
@@ -565,16 +605,20 @@ impl DashboardApp {
         );
     }
 
-    fn top_bar(&mut self, ui: &mut egui::Ui, is_busy: bool) {
+    fn top_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_busy: bool) {
         ui.horizontal(|ui| {
             if let Some(tex) = &self.mascot_tex {
-                ui.image((tex.id(), Vec2::splat(38.0)));
+                ui.image((tex.id(), Vec2::splat(34.0)));
             }
+            ui.add_space(4.0);
             ui.vertical(|ui| {
-                ui.label(RichText::new("PERCYSCARLETT").strong().size(20.0).color(Color32::WHITE));
-                ui.label(RichText::new("Xbox Series X|S translation layer · PercyLicense v1.2").size(11.0).color(TEXT_DIM));
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.label(RichText::new("PercyScarlett").font(semibold(17.0)).color(WHITE));
+                ui.label(RichText::new("Xbox Series X|S translation layer").size(11.5).color(DIM));
             });
-            ui.add_space(28.0);
+            ui.add_space(36.0);
+
+            let mut active_rect = None;
             for (t, label) in [
                 (DashTab::Home, "Home"),
                 (DashTab::Shims, "Shims"),
@@ -582,29 +626,36 @@ impl DashboardApp {
                 (DashTab::Settings, "Settings"),
             ] {
                 let active = self.tab == t;
-                let text = RichText::new(label).size(15.0).color(if active { Color32::WHITE } else { TEXT_DIM });
-                let resp = ui.add(egui::Button::new(if active { text.strong() } else { text }).frame(false));
+                let resp = ui.add(
+                    egui::Button::new(RichText::new(label).size(14.5).color(if active { WHITE } else { DIM })).frame(false),
+                );
                 if active {
-                    ui.painter().hline(resp.rect.x_range(), resp.rect.bottom() + 6.0, Stroke::new(3.0_f32, PINK));
+                    active_rect = Some(resp.rect);
                 }
-                if resp.clicked() {
+                if resp.clicked() && !active {
                     self.tab = t;
+                    self.tab_switches += 1.0;
                 }
-                ui.add_space(10.0);
+                ui.add_space(12.0);
             }
+            // Sliding underline under the active tab.
+            if let Some(r) = active_rect {
+                let l = ctx.animate_value_with_time(egui::Id::new("tab_l"), r.left(), 0.22);
+                let rr = ctx.animate_value_with_time(egui::Id::new("tab_r"), r.right(), 0.22);
+                let y = r.bottom() + 8.0;
+                ui.painter().rect_filled(Rect::from_min_max(Pos2::new(l, y), Pos2::new(rr, y + 2.0)), 1.0_f32, GREEN);
+            }
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(format!("v{APP_VERSION}")).size(12.0).color(TEXT_DIM));
+                ui.label(RichText::new(format!("v{APP_VERSION}")).size(12.0).color(DIM));
                 let upd_avail = self.update.lock().unwrap().available.clone();
                 if let Some((new_ver, _)) = upd_avail {
-                    let pill = egui::Button::new(RichText::new(format!("Update to v{new_ver}")).size(12.0).strong().color(Color32::BLACK))
-                        .fill(ORANGE)
-                        .corner_radius(12.0_f32);
-                    if ui.add(pill).clicked() {
+                    if ui.add(primary(&format!("Update to v{new_ver}")).corner_radius(14.0_f32)).clicked() {
                         self.update.lock().unwrap().show_modal = true;
                     }
                 }
                 if is_busy {
-                    ui.spinner();
+                    ui.add(egui::Spinner::new().color(GREEN));
                 }
             });
         });
@@ -612,38 +663,44 @@ impl DashboardApp {
 
     fn home(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_busy: bool) {
         let (rt_have, rt_total, rt_dir) = self.runtime_count.lock().unwrap().clone();
+        let ready = rt_have >= rt_total;
 
-        // Hero banner: art is painted behind the content once its size is known.
-        let art = ui.painter().add(egui::Shape::Noop);
-        let hero = egui::Frame::NONE.inner_margin(egui::Margin::symmetric(24, 20)).show(ui, |ui| {
+        card().corner_radius(18.0_f32).inner_margin(28.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.set_min_height(96.0);
-            ui.label(RichText::new("JUMP BACK IN").strong().size(32.0).color(Color32::WHITE));
-            ui.add_space(4.0);
-            if rt_have < rt_total {
-                ui.label(RichText::new(format!("Standalone mode: {rt_have}/{rt_total} runtime DLLs found")).size(13.0).color(Color32::WHITE));
-                ui.add_space(8.0);
-                let btn = egui::Button::new(RichText::new("⬇  Download runtime & add to Start Menu").strong().color(Color32::BLACK))
-                    .fill(Color32::WHITE)
-                    .corner_radius(4.0_f32);
-                if ui.add_enabled(!is_busy, btn).clicked() {
-                    self.install_runtime(ctx);
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("Jump back in").font(semibold(34.0)).color(WHITE));
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("●").size(10.0).color(if ready { GREEN } else { DIM }));
+                        let status = if ready {
+                            format!("Runtime ready · {rt_have}/{rt_total} DLLs in {}", rt_dir.display())
+                        } else {
+                            format!("Standalone mode · {rt_have}/{rt_total} runtime DLLs found")
+                        };
+                        ui.label(RichText::new(status).size(13.5).color(DIM));
+                    });
+                    ui.add_space(10.0);
+                    let btn = if ready {
+                        egui::Button::new("Reinstall / add to Start Menu")
+                    } else {
+                        primary("Download runtime & add to Start Menu")
+                    };
+                    if ui.add_enabled(!is_busy, btn).clicked() {
+                        self.install_runtime(ctx);
+                    }
+                });
+                if let Some(tex) = &self.mascot_tex {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.image((tex.id(), Vec2::splat(112.0)));
+                    });
                 }
-            } else {
-                ui.label(RichText::new(format!("✔ Runtime ready · {rt_have}/{rt_total} DLLs in {}", rt_dir.display())).size(13.0).color(Color32::WHITE));
-                ui.add_space(8.0);
-                if ui.add_enabled(!is_busy, egui::Button::new("Reinstall / add to Start Menu")).clicked() {
-                    self.install_runtime(ctx);
-                }
-            }
+            });
         });
-        let hero_rect = hero.response.rect;
-        ui.painter().with_clip_rect(hero_rect).set(art, hero_art(hero_rect));
 
-        ui.add_space(18.0);
+        ui.add_space(22.0);
         heading(ui, "Quick actions");
 
-        // Console-style tile row: arrows move focus, Enter or click runs it.
+        // Arrows move focus, Enter or click runs the tile.
         let mut activate = None;
         if ctx.memory(|m| m.focused().is_none()) {
             ctx.input(|i| {
@@ -663,23 +720,21 @@ impl DashboardApp {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for (idx, t) in TILES.iter().enumerate() {
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(tile_w, 150.0), Sense::click());
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(tile_w, 136.0), Sense::click());
                 let focused = self.selected_tile == idx;
-                let r = if focused || resp.hovered() { rect.expand(3.0) } else { rect };
+                let lift = ctx.animate_bool_with_time(resp.id.with("lift"), resp.hovered() || focused, 0.16);
+                let ring = ctx.animate_bool_with_time(resp.id.with("ring"), focused, 0.2);
+                let r = rect.translate(Vec2::new(0.0, -3.0 * lift));
                 let p = ui.painter();
-                p.add(gradient(r, [t.from, t.to, t.to.gamma_multiply(0.5), t.from.gamma_multiply(0.5)]));
-                let scrim = Rect::from_min_max(Pos2::new(r.left(), r.center().y - 10.0), r.max);
-                let shade = Color32::from_black_alpha(190);
-                p.add(gradient(scrim, [Color32::TRANSPARENT, Color32::TRANSPARENT, shade, shade]));
-                p.text(r.left_top() + Vec2::new(14.0, 10.0), egui::Align2::LEFT_TOP, t.glyph, FontId::proportional(32.0), Color32::WHITE);
-                p.text(r.left_bottom() + Vec2::new(14.0, -60.0), egui::Align2::LEFT_TOP, t.title, FontId::proportional(17.0), Color32::WHITE);
-                let sub = p.layout(t.sub.to_string(), FontId::proportional(11.5), TEXT_DIM, r.width() - 28.0);
-                p.galley(r.left_bottom() + Vec2::new(14.0, -38.0), sub, TEXT_DIM);
-                if focused {
-                    p.rect_stroke(r, 0.0_f32, Stroke::new(3.0_f32, Color32::WHITE), StrokeKind::Outside);
+                p.rect_filled(r, 14.0_f32, mix(SURFACE, SURFACE_HI, lift));
+                if ring > 0.0 {
+                    p.rect_stroke(r, 14.0_f32, Stroke::new(2.0_f32, GREEN.gamma_multiply(ring)), StrokeKind::Outside);
                 }
-                let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-                if resp.clicked() {
+                p.text(r.left_top() + Vec2::new(18.0, 16.0), egui::Align2::LEFT_TOP, t.glyph, FontId::proportional(22.0), GREEN);
+                p.text(r.left_bottom() + Vec2::new(18.0, -56.0), egui::Align2::LEFT_TOP, t.title, semibold(16.0), WHITE);
+                let sub = p.layout(t.sub.to_string(), FontId::proportional(12.5), DIM, r.width() - 36.0);
+                p.galley(r.left_bottom() + Vec2::new(18.0, -34.0), sub, DIM);
+                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     self.selected_tile = idx;
                     activate = Some(idx);
                 }
@@ -689,32 +744,35 @@ impl DashboardApp {
             self.run_cli(ctx, self.tile_args(idx));
         }
 
-        ui.add_space(18.0);
+        ui.add_space(22.0);
         card().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Target .exe").strong());
-                ui.add(egui::TextEdit::singleline(&mut self.exe_path).desired_width(420.0));
-                if ui.button("▶ Launch Overlay").clicked() {
-                    self.run_cli(ctx, vec!["launch".into(), self.exe_path.clone()]);
-                }
-                if ui.button("Run In-Process").clicked() {
-                    self.run_cli(ctx, vec!["run".into(), self.exe_path.clone()]);
-                }
-                if ui.button("Inspect PE32+").clicked() {
-                    self.run_cli(ctx, vec!["inspect".into(), self.exe_path.clone()]);
-                }
-            });
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Build folder").strong());
-                ui.add(egui::TextEdit::singleline(&mut self.build_dir).desired_width(420.0));
-                if ui.button("Verify Sidecar DLLs").clicked() {
-                    self.run_cli(ctx, vec!["verify-dlls".into(), self.build_dir.clone()]);
-                }
-                if ui.button("Plan Bring-Up").clicked() {
-                    self.run_cli(ctx, vec!["plan".into(), self.build_dir.clone()]);
-                }
+            egui::Grid::new("paths").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
+                ui.label(RichText::new("Target .exe").color(DIM));
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.exe_path).desired_width(420.0));
+                    if ui.button("Launch Overlay").clicked() {
+                        self.run_cli(ctx, vec!["launch".into(), self.exe_path.clone()]);
+                    }
+                    if ui.button("Run In-Process").clicked() {
+                        self.run_cli(ctx, vec!["run".into(), self.exe_path.clone()]);
+                    }
+                    if ui.button("Inspect PE32+").clicked() {
+                        self.run_cli(ctx, vec!["inspect".into(), self.exe_path.clone()]);
+                    }
+                });
+                ui.end_row();
+                ui.label(RichText::new("Build folder").color(DIM));
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.build_dir).desired_width(420.0));
+                    if ui.button("Verify Sidecar DLLs").clicked() {
+                        self.run_cli(ctx, vec!["verify-dlls".into(), self.build_dir.clone()]);
+                    }
+                    if ui.button("Plan Bring-Up").clicked() {
+                        self.run_cli(ctx, vec!["plan".into(), self.build_dir.clone()]);
+                    }
+                });
+                ui.end_row();
             });
         });
     }
@@ -725,35 +783,40 @@ impl eframe::App for DashboardApp {
         let is_busy = *self.busy.lock().unwrap();
 
         egui::TopBottomPanel::top("top_bar")
-            .frame(egui::Frame::NONE.fill(NIGHT_TOP).inner_margin(egui::Margin::symmetric(18, 12)))
+            .frame(egui::Frame::NONE.fill(BLACK).inner_margin(egui::Margin::symmetric(24, 14)))
+            .show_separator_line(false)
             .show(ctx, |ui| {
-                self.top_bar(ui, is_busy);
+                self.top_bar(ui, ctx, is_busy);
                 let r = ui.clip_rect();
-                ui.painter().hline(r.x_range(), r.bottom() - 1.0, Stroke::new(2.0_f32, PINK.gamma_multiply(0.8)));
+                ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0_f32, LINE));
             });
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(NIGHT_BOTTOM).inner_margin(22.0))
+            .frame(egui::Frame::NONE.fill(BLACK).inner_margin(egui::Margin::symmetric(28, 24)))
             .show(ctx, |ui| {
-                let bg = ui.clip_rect();
-                ui.painter().add(gradient(bg, [NIGHT_TOP, NIGHT_TOP, NIGHT_BOTTOM, NIGHT_BOTTOM]));
+                // Fade the page in on tab switch.
+                let shown = ctx.animate_value_with_time(egui::Id::new("tab_fade"), self.tab_switches, 0.22);
+                ui.set_opacity(1.0 - (self.tab_switches - shown).clamp(0.0, 1.0) * 0.9);
 
                 match self.tab {
                     DashTab::Home => self.home(ui, ctx, is_busy),
                     DashTab::Shims => {
-                        heading(ui, "Compiled Rust shim suite (9 DLLs)");
+                        ui.label(RichText::new("Shims").font(semibold(28.0)).color(WHITE));
+                        ui.label(RichText::new("Compiled Rust shim suite, 9 DLLs").color(DIM));
+                        ui.add_space(12.0);
                         card().show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                                egui::Grid::new("shim_grid").striped(true).spacing([18.0, 8.0]).show(ui, |ui| {
+                            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                                egui::Grid::new("shim_grid").striped(true).spacing([22.0, 10.0]).show(ui, |ui| {
                                     for h in ["DLL", "Subsystem", "Status", "Implemented surface"] {
-                                        ui.label(RichText::new(h).strong().color(PINK));
+                                        ui.label(RichText::new(h).size(12.5).color(DIM));
                                     }
                                     ui.end_row();
                                     for s in gdk::SHIM_SPECS {
-                                        ui.label(RichText::new(s.dll).strong().color(Color32::WHITE));
+                                        ui.label(RichText::new(s.dll).font(semibold(14.0)).color(WHITE));
                                         ui.label(s.area);
-                                        ui.label(RichText::new(s.status).color(if s.status.contains("Live-DLL") { READY_GREEN } else { ORANGE }));
+                                        let live = s.status.contains("Live-DLL");
+                                        ui.label(RichText::new(s.status).color(if live { GREEN } else { DIM }));
                                         ui.label(s.role);
                                         ui.end_row();
                                     }
@@ -762,15 +825,21 @@ impl eframe::App for DashboardApp {
                         });
                     }
                     DashTab::Shaders => {
-                        heading(ui, "RDNA2 (GFX10.3) → SM 6.6 DXIL recompiler");
+                        ui.label(RichText::new("Shaders").font(semibold(28.0)).color(WHITE));
+                        ui.label(RichText::new("RDNA2 (GFX10.3) → SM 6.6 DXIL recompiler").color(DIM));
+                        ui.add_space(12.0);
                         card().show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.label(RichText::new("Verified: 21,522 / 21,522 (100.0%, fail=0) via dxcompiler.dll (VS=89, PS=7730, CS=51, Mesh=13588, RT=64)").color(READY_GREEN));
-                            ui.add_space(8.0);
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new("shaders.rpf").strong());
+                                ui.label(RichText::new("●").size(10.0).color(GREEN));
+                                ui.label("21,522 / 21,522 verified (100%, 0 failures) via dxcompiler.dll");
+                            });
+                            ui.label(RichText::new("VS 89 · PS 7,730 · CS 51 · Mesh 13,588 · RT 64").color(DIM));
+                            ui.add_space(12.0);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("shaders.rpf").color(DIM));
                                 ui.add(egui::TextEdit::singleline(&mut self.shaders_rpf).desired_width(450.0));
-                                if ui.button("Benchmark 500").clicked() {
+                                if ui.add(primary("Benchmark 500")).clicked() {
                                     self.run_cli(ctx, self.tile_args(2));
                                 }
                                 if ui.button("Benchmark all 21,522").clicked() {
@@ -780,35 +849,38 @@ impl eframe::App for DashboardApp {
                         });
                     }
                     DashTab::Settings => {
-                        heading(ui, "Runtime telemetry & compatibility flags");
+                        ui.label(RichText::new("Settings").font(semibold(28.0)).color(WHITE));
+                        ui.label(RichText::new("Runtime telemetry and compatibility flags").color(DIM));
+                        ui.add_space(12.0);
                         card().show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.checkbox(&mut self.wrap_d3d12, "PERCY_D3D12_WRAP=1 (enable ID3D12DeviceX COM proxy)");
-                            ui.checkbox(&mut self.log_d3d12, "PERCY_D3D12_LOG (trace PresentX & D3D12.X calls)");
-                            ui.checkbox(&mut self.log_xmem, "PERCY_XMEM_LOG (trace XMemAlloc / VirtualAlloc pool)");
+                            ui.checkbox(&mut self.wrap_d3d12, "PERCY_D3D12_WRAP=1 · enable ID3D12DeviceX COM proxy");
+                            ui.checkbox(&mut self.log_d3d12, "PERCY_D3D12_LOG · trace PresentX and D3D12.X calls");
+                            ui.checkbox(&mut self.log_xmem, "PERCY_XMEM_LOG · trace XMemAlloc / VirtualAlloc pool");
                         });
                     }
                 }
 
-                ui.add_space(16.0);
-                ui.label(RichText::new("Console").strong().size(13.0).color(TEXT_DIM));
-                ui.add_space(4.0);
+                ui.add_space(22.0);
+                ui.label(RichText::new("Console").size(12.5).color(DIM));
                 let log_text = self.console.lock().unwrap().clone();
-                egui::Frame::NONE
-                    .fill(Color32::from_rgb(10, 7, 18))
-                    .stroke(Stroke::new(1.0_f32, BORDER_COL))
-                    .corner_radius(6.0_f32)
-                    .inner_margin(10.0)
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut log_text.as_str())
-                                    .font(egui::TextStyle::Monospace)
-                                    .desired_width(f32::INFINITY)
-                                    .desired_rows(9),
-                            );
-                        });
+                egui::Frame::NONE.fill(INSET).corner_radius(12.0_f32).inner_margin(14.0).show(ui, |ui| {
+                    // Fill the remaining height so short logs start at the top and long ones stick to the bottom.
+                    egui::ScrollArea::vertical()
+                        .stick_to_bottom(true)
+                        .auto_shrink([false, false])
+                        .max_height(ui.available_height().max(90.0))
+                        .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut log_text.as_str())
+                                .font(egui::TextStyle::Monospace)
+                                .text_color(mix(DIM, WHITE, 0.4))
+                                .frame(false)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(1),
+                        );
                     });
+                });
             });
 
         let (show_modal, avail, installing, upd_status) = {
@@ -818,19 +890,20 @@ impl eframe::App for DashboardApp {
         if show_modal {
             if let Some((new_ver, rel_url)) = avail {
                 let mut open = true;
-                egui::Window::new("Update available")
+                egui::Window::new(RichText::new("Update available").font(semibold(16.0)))
                     .open(&mut open)
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .frame(egui::Frame::window(&ctx.style()).inner_margin(20.0))
                     .show(ctx, |ui| {
-                        ui.label(RichText::new(format!("Installed v{APP_VERSION} → latest v{new_ver}")).strong());
-                        ui.add_space(6.0);
+                        ui.label(format!("Installed v{APP_VERSION} → latest v{new_ver}"));
                         if !upd_status.is_empty() {
-                            ui.label(RichText::new(&upd_status).color(ORANGE));
+                            ui.label(RichText::new(&upd_status).color(DIM));
                         }
+                        ui.add_space(8.0);
                         ui.horizontal(|ui| {
-                            if ui.add_enabled(!installing, egui::Button::new("Download & install")).clicked() {
+                            if ui.add_enabled(!installing, primary("Download & install")).clicked() {
                                 spawn_install_update(new_ver.clone(), Arc::clone(&self.update), ctx.clone());
                             }
                             if ui.button("Open release page").clicked() {
