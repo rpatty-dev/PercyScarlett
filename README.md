@@ -21,8 +21,8 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
 | **Disk Overhead** | **0 GB** (NTFS junctions + hardlinks) | ~350 GB extracted intermediates |
 | **CPU Execution** | **Native x86-64** (`machine=0x8664`) | Native / static recompile |
 | **Shipped Sidecar DLLs** | **6/6 live-loaded on Win11 (`LoadLibraryW`)** | Untested |
-| **Compiled Shim DLLs** | **8 Rust `cdylib` DLLs** (`12/12` tests passing) | Skeleton / Incomplete |
-| **Day-1 Crash Telemetry** | **Built-in VEH fault logger** + `PERCY_XMEM_LOG` | External debugger required |
+| **Compiled Shim DLLs** | **8 Rust `cdylib` DLLs** (`13/13` tests passing, `0` warnings) | Skeleton / Incomplete |
+| **Day-1 Crash Telemetry** | **Built-in VEH fault logger** + `PERCY_XMEM_LOG` + `PERCY_D3D12_LOG` | External debugger required |
 | **Xbox VFS & Auto-Stubs** | **`G:/T:/S:` rewrite** + `percyscarlett stubgen` | Manual |
 
 ---
@@ -57,7 +57,7 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
 | Root (`src/`) | `percyscarlett.exe` | PE32+ parser, `inspect`, `plan`, `verify-dlls`, `stubgen`, `probe-mem`, `shims` |
 | `crates/xmem` | `xmem.dll` | `XMemAlloc*`, `XMemFree*`, `XMemVirtualQuery`, working set stats, VEH crash logger |
 | `crates/kernelx` | `kernelx.dll` | `XMemAlloc*`, `TitleMemoryStatus`, `JobTitleMemoryStatus`, `SetThreadName` |
-| `crates/d3d12_xs` | `d3d12_xs.dll` | `D3D12XboxCreateDevice`, `D3D12CreateDevice`, root sig flag masking, deserializer, debug |
+| `crates/d3d12_xs` | `d3d12_xs.dll` | `D3D12XboxCreateDevice`, `D3D12CreateDevice`, opt-in `ID3D12DeviceX` wrapper (`PERCY_D3D12_WRAP=1`), root sig flag masking |
 | `crates/xg_xs` | `xg_xs.dll` | `XGGetFormatBlockInfo`, `XGCreateTexture2DComputer` COM vtable |
 | `crates/xgameruntime` | `xgameruntime.dll` | `XTaskQueue*`, `XAsync*`, `XUser*`, `Xbl*` offline auth, `XGameSaveInitializeProvider` |
 | `crates/dstorage` | `dstorage.dll` | `DStorageGetFactory` (`IDStorageFactoryX` / `QueueX` / `FileX`), `G:/T:/S:` VFS rewrite |
@@ -92,11 +92,11 @@ cargo build --release --workspace
 ### Non-Destructive Overlay Mount
 1. Create a mount directory (e.g. `D:\PercyScarlett_Mount`).
 2. Junction (`mklink /J`) large asset subdirectories and hardlink (`mklink /H`) root files.
-3. Copy `target\release\*.dll` into the mount directory, optionally set `PERCY_VFS_G`, `PERCY_XMEM_LOG`, and `PERCY_CRASH_LOG`, and launch.
+3. Copy `target\release\*.dll` into the mount directory, optionally set `PERCY_VFS_G`, `PERCY_XMEM_LOG`, `PERCY_CRASH_LOG`, `PERCY_D3D12_WRAP=1`, and `PERCY_D3D12_LOG`, and launch.
 
 ---
 
-## Tests (`12/12 passing`)
+## Tests (`13/13 passing`, `0` warnings)
 
 ```powershell
 cargo test --workspace
@@ -104,7 +104,8 @@ cargo test --workspace
 
 - `e2e_bringup` (1): Synthetic PE32+ `scarlett_guest.exe` build, `inspect`, `stubgen`, and live execution across all 8 shim DLLs
 - `percyscarlett` (3): PE32+ parser, Win32 `VirtualAlloc` pool, live `kernel32.dll` forwarding
-- `xmem` (1), `kernelx` (1), `d3d12_xs` (1), `xg_xs` (1), `xgameruntime` (1), `dstorage` (1), `winrt_xs` (1), `GameInput` (1): C-ABI exports, COM vtables, `HSTRING`, VFS rewrite, and host D3D12 forwarding
+- `d3d12_xs` (2): Host `d3d12.dll` symbol forwarding + `ID3D12DeviceX` COM wrapper (`PERCY_D3D12_WRAP=1`)
+- `xmem` (1), `kernelx` (1), `xg_xs` (1), `xgameruntime` (1), `dstorage` (1), `winrt_xs` (1), `GameInput` (1): C-ABI exports, COM vtables, `HSTRING`, VFS rewrite, and offline GDK runtime checks
 
 ---
 
