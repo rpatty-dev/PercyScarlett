@@ -22,6 +22,34 @@ fn log_d3d12(msg: &str) {
     }
 }
 
+fn fnv1a_64(data: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in data {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+pub fn cache_dir() -> std::path::PathBuf {
+    std::env::var("PERCY_SHADER_CACHE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("percy_shader_cache"))
+}
+
+pub fn cache_load_blob(tag: &str, key: &[u8]) -> Option<Vec<u8>> {
+    let p = cache_dir().join(format!("{tag}_{:016x}.bin", fnv1a_64(key)));
+    std::fs::read(p).ok()
+}
+
+pub fn cache_store_blob(tag: &str, key: &[u8], blob: &[u8]) {
+    let dir = cache_dir();
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let p = dir.join(format!("{tag}_{:016x}.bin", fnv1a_64(key)));
+        let _ = std::fs::write(p, blob);
+    }
+}
+
 #[cfg(windows)]
 extern "system" {
     fn LoadLibraryA(name: *const i8) -> usize;
@@ -364,5 +392,13 @@ mod tests {
             let rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(p_vtbl[2]);
             assert_eq!(rel(proxy), 0);
         }
+    }
+
+    #[test]
+    fn disk_shader_cache_roundtrip() {
+        let key = b"rsig_v1_test_key";
+        let blob = b"\x44\x58\x42\x43_cached_pso";
+        cache_store_blob("pso", key, blob);
+        assert_eq!(cache_load_blob("pso", key).as_deref(), Some(blob.as_slice()));
     }
 }

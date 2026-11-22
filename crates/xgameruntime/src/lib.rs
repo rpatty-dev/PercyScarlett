@@ -179,17 +179,135 @@ pub unsafe extern "system" fn XblContextCloseHandle(ctx: *mut c_void) {
     }
 }
 
+#[repr(C)]
+struct XGameSaveProviderHandle {
+    magic: u32,
+    save_dir: std::path::PathBuf,
+}
+
+#[repr(C)]
+struct XGameSaveContainerHandle {
+    magic: u32,
+    container_dir: std::path::PathBuf,
+}
+
+const XGS_PROV_MAGIC: u32 = 0x5053_4753; // "PSGS"
+const XGS_CONT_MAGIC: u32 = 0x5053_4743; // "PSGC"
+
+fn save_root_dir() -> std::path::PathBuf {
+    std::env::var("PERCY_VFS_S")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("percy_S"))
+        .join("saves")
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn XGameSaveInitializeProvider(
     _user: *mut c_void,
-    _scid: *const u8,
+    scid: *const u8,
     _sync_on_demand: i32,
     out_provider: *mut *mut c_void,
 ) -> i32 {
     if out_provider.is_null() {
         return E_POINTER;
     }
-    *out_provider = Box::into_raw(Box::new(0x5053_4753u32)) as *mut c_void;
+    let scid_str = if !scid.is_null() {
+        std::ffi::CStr::from_ptr(scid as *const i8)
+            .to_string_lossy()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect::<String>()
+    } else {
+        "default".to_string()
+    };
+    let save_dir = save_root_dir().join(if scid_str.is_empty() { "default" } else { &scid_str });
+    let _ = std::fs::create_dir_all(&save_dir);
+    *out_provider = Box::into_raw(Box::new(XGameSaveProviderHandle {
+        magic: XGS_PROV_MAGIC,
+        save_dir,
+    })) as *mut c_void;
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XGameSaveCloseProvider(provider: *mut c_void) {
+    if !provider.is_null() && (*(provider as *const XGameSaveProviderHandle)).magic == XGS_PROV_MAGIC {
+        drop(Box::from_raw(provider as *mut XGameSaveProviderHandle));
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XGameSaveCreateContainer(
+    provider: *mut c_void,
+    name: *const u8,
+    out_container: *mut *mut c_void,
+) -> i32 {
+    if provider.is_null() || name.is_null() || out_container.is_null() {
+        return E_POINTER;
+    }
+    let p = &*(provider as *const XGameSaveProviderHandle);
+    let cname = std::ffi::CStr::from_ptr(name as *const i8)
+        .to_string_lossy()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect::<String>();
+    let container_dir = p.save_dir.join(if cname.is_empty() { "slot0" } else { &cname });
+    let _ = std::fs::create_dir_all(&container_dir);
+    *out_container = Box::into_raw(Box::new(XGameSaveContainerHandle {
+        magic: XGS_CONT_MAGIC,
+        container_dir,
+    })) as *mut c_void;
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XGameSaveCloseContainer(container: *mut c_void) {
+    if !container.is_null() && (*(container as *const XGameSaveContainerHandle)).magic == XGS_CONT_MAGIC {
+        drop(Box::from_raw(container as *mut XGameSaveContainerHandle));
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XGameSaveWriteBlob(
+    container: *mut c_void,
+    blob_name: *const u8,
+    data: *const u8,
+    size: usize,
+) -> i32 {
+    if container.is_null() || blob_name.is_null() || (size > 0 && data.is_null()) {
+        return E_POINTER;
+    }
+    let c = &*(container as *const XGameSaveContainerHandle);
+    let bname = std::ffi::CStr::from_ptr(blob_name as *const i8).to_string_lossy();
+    let bytes = if size == 0 { &[] } else { std::slice::from_raw_parts(data, size) };
+    if std::fs::write(c.container_dir.join(format!("{bname}.bin")), bytes).is_ok() {
+        S_OK
+    } else {
+        0x8000_4005u32 as i32
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XGameSaveReadBlobData(
+    container: *mut c_void,
+    blob_name: *const u8,
+    out_size: *mut usize,
+    out_buf: *mut u8,
+    buf_cap: usize,
+) -> i32 {
+    if container.is_null() || blob_name.is_null() || out_size.is_null() {
+        return E_POINTER;
+    }
+    let c = &*(container as *const XGameSaveContainerHandle);
+    let bname = std::ffi::CStr::from_ptr(blob_name as *const i8).to_string_lossy();
+    let Ok(bytes) = std::fs::read(c.container_dir.join(format!("{bname}.bin"))) else {
+        *out_size = 0;
+        return 0x8007_0002u32 as i32; // ERROR_FILE_NOT_FOUND
+    };
+    *out_size = bytes.len();
+    if !out_buf.is_null() && buf_cap >= bytes.len() {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, bytes.len());
+    }
     S_OK
 }
 
@@ -254,6 +372,18 @@ mod tests {
             let mut xbl_ctx: *mut c_void = std::ptr::null_mut();
             assert_eq!(XblContextCreateHandle(user, &mut xbl_ctx), S_OK);
             XblContextCloseHandle(xbl_ctx);
+
+            let mut prov: *mut c_void = std::ptr::null_mut();
+            assert_eq!(XGameSaveInitializeProvider(user, b"test_scid\0".as_ptr(), 0, &mut prov), S_OK);
+            let mut cont: *mut c_void = std::ptr::null_mut();
+            assert_eq!(XGameSaveCreateContainer(prov, b"slot0\0".as_ptr(), &mut cont), S_OK);
+            assert_eq!(XGameSaveWriteBlob(cont, b"save\0".as_ptr(), b"HELLO".as_ptr(), 5), S_OK);
+            let mut out_sz = 0usize;
+            let mut buf = [0u8; 8];
+            assert_eq!(XGameSaveReadBlobData(cont, b"save\0".as_ptr(), &mut out_sz, buf.as_mut_ptr(), buf.len()), S_OK);
+            assert_eq!(&buf[..out_sz], b"HELLO");
+            XGameSaveCloseContainer(cont);
+            XGameSaveCloseProvider(prov);
 
             XUserCloseHandle(user);
             XTaskQueueCloseHandle(q);
