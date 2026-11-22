@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-use d3d12_xs::rdna2_hlsl::{lift_to_hlsl, ShaderStage};
+use d3d12_xs::rdna2_hlsl::{decode_rdna2, detect_stage, lift_to_hlsl_from_ops, ShaderStage};
 use flate2::{Decompress, FlushDecompress, Status};
 
 fn rd32(b: &[u8], off: usize) -> u32 {
@@ -16,49 +16,6 @@ fn skip_scarlett_prologue(code: &[u8]) -> &[u8] {
         &code[0x24..]
     } else {
         code
-    }
-}
-
-fn quick_stage_hint(code: &[u8]) -> ShaderStage {
-    let body = skip_scarlett_prologue(code);
-    let mut has_mrt = false;
-    let mut has_pos = false;
-    let mut has_prim = false;
-    let mut has_rt = false;
-    let mut i = 0usize;
-    while i + 4 <= body.len() {
-        let w0 = rd32(body, i);
-        if w0 == 0xBF81_0000 || w0 == 0xBF9F_0000 {
-            break;
-        }
-        let enc6 = w0 >> 26;
-        if enc6 == 0x3E {
-            let tgt = (w0 >> 4) & 0x3F;
-            if tgt <= 8 {
-                has_mrt = true;
-            } else if (12..=15).contains(&tgt) {
-                has_pos = true;
-            } else if tgt == 20 {
-                has_prim = true;
-            }
-        } else if enc6 == 0x3C {
-            let op = (w0 >> 18) & 0xFF;
-            if op == 0x66 || op == 0x67 {
-                has_rt = true;
-            }
-        }
-        i += 4;
-    }
-    if has_rt {
-        ShaderStage::RayTracing
-    } else if has_prim {
-        ShaderStage::Mesh
-    } else if has_mrt {
-        ShaderStage::Pixel
-    } else if has_pos {
-        ShaderStage::Vertex
-    } else {
-        ShaderStage::Compute
     }
 }
 
@@ -131,6 +88,8 @@ pub fn run_shader_benchmark(path: &Path, limit: usize, compile_dxil: bool) {
     let ms = std::sync::atomic::AtomicUsize::new(0);
     let rt = std::sync::atomic::AtomicUsize::new(0);
     let first_err: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let unknown_hist: std::sync::Mutex<std::collections::HashMap<String, usize>> =
+        std::sync::Mutex::new(std::collections::HashMap::new());
     let next_idx = std::sync::atomic::AtomicUsize::new(0);
     let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8).min(16);
 
@@ -151,10 +110,29 @@ pub fn run_shader_benchmark(path: &Path, limit: usize, compile_dxil: bool) {
                     let abs_off = off_code.saturating_add(off);
                     if abs_off + sz <= raw.len() && sz > 0 {
                         let code = skip_scarlett_prologue(&raw[abs_off..abs_off + sz]);
-                        let hint = quick_stage_hint(code);
-                        let (stage, hlsl, insns) = lift_to_hlsl(code, hint);
-                        if insns > 0 {
+                        let ops = decode_rdna2(code);
+                        let stage = detect_stage(&ops, ShaderStage::Compute);
+                        let all_known = !ops.is_empty() && ops.iter().all(|o| o.is_known);
+                        let (_stage, hlsl, insns) = lift_to_hlsl_from_ops(&ops, stage);
+                        if all_known && insns > 0 {
                             lifted_ok.fetch_add(1, Relaxed);
+                        } else if !ops.is_empty() {
+                            let mut hist = unknown_hist.lock().unwrap();
+                            for u in ops.iter().filter(|o| !o.is_known) {
+                                let key = u.mnemonic.split_whitespace().next().unwrap_or(&u.mnemonic).to_string();
+                                *hist.entry(key).or_insert(0) += 1;
+                            }
+                            drop(hist);
+                            let mut guard = first_err.lock().unwrap();
+                            if guard.is_none() {
+                                if let Some(u) = ops.iter().find(|o| !o.is_known) {
+                                    *guard = Some(format!(
+                                        "shader#{i} ({}): unknown RDNA2 insn {}",
+                                        stage.as_str(),
+                                        u.mnemonic
+                                    ));
+                                }
+                            }
                         }
                         match stage {
                             ShaderStage::Vertex => { vs.fetch_add(1, Relaxed); }
@@ -166,15 +144,19 @@ pub fn run_shader_benchmark(path: &Path, limit: usize, compile_dxil: bool) {
                         }
                         if compile_dxil {
                             #[cfg(windows)]
-                            match d3d12_xs::compile_hlsl_to_dxil(&hlsl, stage) {
-                                Ok(_) => { dxil_ok.fetch_add(1, Relaxed); }
-                                Err(e) => {
-                                    dxil_fail.fetch_add(1, Relaxed);
-                                    let mut guard = first_err.lock().unwrap();
-                                    if guard.is_none() {
-                                        *guard = Some(format!("shader#{i} ({}): {e}", stage.as_str()));
+                            if all_known && insns > 0 {
+                                match d3d12_xs::compile_hlsl_to_dxil(&hlsl, stage) {
+                                    Ok(_) => { dxil_ok.fetch_add(1, Relaxed); }
+                                    Err(e) => {
+                                        dxil_fail.fetch_add(1, Relaxed);
+                                        let mut guard = first_err.lock().unwrap();
+                                        if guard.is_none() {
+                                            *guard = Some(format!("shader#{i} ({}): {e}", stage.as_str()));
+                                        }
                                     }
                                 }
+                            } else {
+                                dxil_fail.fetch_add(1, Relaxed);
                             }
                         }
                     }
@@ -202,13 +184,24 @@ pub fn run_shader_benchmark(path: &Path, limit: usize, compile_dxil: bool) {
     let ms = ms.into_inner();
     let rt = rt.into_inner();
     let first_err = first_err.into_inner().unwrap();
+    let mut top_unk: Vec<(String, usize)> = unknown_hist.into_inner().unwrap().into_iter().collect();
+    top_unk.sort_by(|a, b| b.1.cmp(&a.1));
 
     let elapsed = t0.elapsed().as_secs_f32();
     println!(
-        "PS09 Shaders: total={c3}, benchmarked={total}, lifted={lifted_ok}/{total} ({:.1}%) in {elapsed:.2}s",
+        "PS09 Shaders: total={c3}, benchmarked={total}, strict_lifted={lifted_ok}/{total} ({:.1}%) in {elapsed:.2}s",
         (lifted_ok as f64 / total.max(1) as f64) * 100.0
     );
     println!("Stages: VS={vs} PS={ps} CS={cs} Mesh={ms} RT={rt}");
+    if !top_unk.is_empty() {
+        let summary = top_unk
+            .iter()
+            .take(15)
+            .map(|(k, v)| format!("{k}:{v}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!("Top unknown opcodes: {summary}");
+    }
     if compile_dxil {
         println!(
             "DXIL SM 6.6 (dxcompiler.dll): ok={dxil_ok}/{total} ({:.1}%), fail={dxil_fail}",

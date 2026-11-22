@@ -1,3 +1,4 @@
+pub mod compute_exec;
 pub mod rdna2_hlsl;
 
 use std::ffi::{c_void, CString};
@@ -167,17 +168,16 @@ fn load_dxcompiler() -> Option<usize> {
             }
         }
         if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
+            let mut cur = exe.parent();
+            for _ in 0..4 {
+                let Some(dir) = cur else { break };
                 candidates.push(dir.join("dxcompiler.dll"));
-                if let Some(parent) = dir.parent() {
-                    candidates.push(parent.join("dxcompiler.dll"));
-                    if let Some(root) = parent.parent() {
-                        candidates.push(root.join("tools").join("dxc").join("bin").join("x64").join("dxcompiler.dll"));
-                    }
-                }
+                candidates.push(dir.join("tools").join("dxc").join("bin").join("x64").join("dxcompiler.dll"));
+                cur = dir.parent();
             }
         }
         candidates.push(std::path::PathBuf::from(r"tools\dxc\bin\x64\dxcompiler.dll"));
+        candidates.push(std::path::PathBuf::from(r"..\..\tools\dxc\bin\x64\dxcompiler.dll"));
         candidates.push(std::path::PathBuf::from("dxcompiler.dll"));
         for c in candidates {
             if let Ok(cs) = CString::new(c.to_string_lossy().as_bytes()) {
