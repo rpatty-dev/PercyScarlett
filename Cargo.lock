@@ -7,7 +7,23 @@ name = "d3d12_xs"
 version = "0.1.0"
 
 [[package]]
+name = "dstorage"
+version = "0.1.0"
+
+[[package]]
+name = "gameinput"
+version = "0.1.0"
+
+[[package]]
 name = "percyscarlett"
+version = "0.1.0"
+
+[[package]]
+name = "winrt_xs"
+version = "0.1.0"
+
+[[package]]
+name = "xgameruntime"
 version = "0.1.0"
 
 [[package]]

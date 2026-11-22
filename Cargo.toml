@@ -6,7 +6,14 @@ license = "MIT"
 description = "Clean-room Rust Xbox Series X|S (Scarlett) bring-up & translation layer for Windows 10/11"
 
 [workspace]
-members = ["crates/xmem", "crates/d3d12_xs"]
+members = [
+    "crates/xmem",
+    "crates/d3d12_xs",
+    "crates/winrt_xs",
+    "crates/xgameruntime",
+    "crates/dstorage",
+    "crates/gameinput",
+]
 
 [[bin]]
 name = "percyscarlett"

@@ -14,7 +14,15 @@ fn scarlett_guest_exe_end_to_end_bringup() {
         .and_then(|s| s.to_str())
         .map(|s| s == "release")
         .unwrap_or(false);
-    let mut build_args = vec!["build", "-p", "xmem", "-p", "d3d12_xs"];
+    let mut build_args = vec![
+        "build",
+        "-p", "xmem",
+        "-p", "d3d12_xs",
+        "-p", "winrt_xs",
+        "-p", "xgameruntime",
+        "-p", "dstorage",
+        "-p", "gameinput",
+    ];
     if is_release {
         build_args.push("--release");
     }
@@ -22,13 +30,21 @@ fn scarlett_guest_exe_end_to_end_bringup() {
         .args(&build_args)
         .current_dir(&manifest_dir)
         .status()
-        .expect("cargo build -p xmem -p d3d12_xs");
-    assert!(status.success(), "cargo build -p xmem -p d3d12_xs failed");
+        .expect("cargo build shim crates");
+    assert!(status.success(), "cargo build shim crates failed");
 
     let xmem_dll = target_dir.join("xmem.dll");
     let d3d12_dll = target_dir.join("d3d12_xs.dll");
+    let winrt_dll = target_dir.join("winrt_xs.dll");
+    let xgame_dll = target_dir.join("xgameruntime.dll");
+    let dstorage_dll = target_dir.join("dstorage.dll");
+    let gameinput_dll = target_dir.join("GameInput.dll");
     assert!(xmem_dll.exists(), "missing {}", xmem_dll.display());
     assert!(d3d12_dll.exists(), "missing {}", d3d12_dll.display());
+    assert!(winrt_dll.exists(), "missing {}", winrt_dll.display());
+    assert!(xgame_dll.exists(), "missing {}", xgame_dll.display());
+    assert!(dstorage_dll.exists(), "missing {}", dstorage_dll.display());
+    assert!(gameinput_dll.exists(), "missing {}", gameinput_dll.display());
 
     let work = std::env::temp_dir().join(format!("percyscarlett_e2e_{}", std::process::id()));
     let _ = fs::remove_dir_all(&work);
@@ -37,6 +53,10 @@ fn scarlett_guest_exe_end_to_end_bringup() {
     // Stage compiled shim DLLs into isolated guest directory.
     fs::copy(&xmem_dll, work.join("xmem.dll")).unwrap();
     fs::copy(&d3d12_dll, work.join("d3d12_xs.dll")).unwrap();
+    fs::copy(&winrt_dll, work.join("winrt_xs.dll")).unwrap();
+    fs::copy(&xgame_dll, work.join("xgameruntime.dll")).unwrap();
+    fs::copy(&dstorage_dll, work.join("dstorage.dll")).unwrap();
+    fs::copy(&gameinput_dll, work.join("GameInput.dll")).unwrap();
 
     // Synthesize a real PE32+ executable importing xmem.dll + d3d12_xs.dll.
     let guest_src = work.join("scarlett_guest.rs");
@@ -65,6 +85,31 @@ extern "system" {
         riid: *const [u8; 16],
         out_dev: *mut usize,
     ) -> i32;
+}
+
+#[link(name = "winrt_xs", kind = "dylib")]
+extern "system" {
+    fn RoInitialize(init_type: u32) -> i32;
+    fn WindowsCreateString(src: *const u16, len: u32, out: *mut usize) -> i32;
+    fn WindowsGetStringLen(hs: usize) -> u32;
+    fn WindowsDeleteString(hs: usize) -> i32;
+}
+
+#[link(name = "xgameruntime", kind = "dylib")]
+extern "system" {
+    fn XTaskQueueCreate(w: u32, c: u32, out_q: *mut usize) -> i32;
+    fn XTaskQueueCloseHandle(q: usize);
+    fn XUserGetId(user: usize, out_id: *mut u64) -> i32;
+}
+
+#[link(name = "dstorage", kind = "dylib")]
+extern "system" {
+    fn DStorageSetConfiguration(cfg: usize) -> i32;
+}
+
+#[link(name = "GameInput", kind = "dylib")]
+extern "system" {
+    fn GameInputCreate(out_input: *mut usize) -> i32;
 }
 
 #[repr(C)]
@@ -115,6 +160,24 @@ fn main() {
         ];
         let hr_dev = D3D12CreateDevice(0, 0xB000, &iid_device, core::ptr::null_mut());
         assert_ne!(hr_dev, 0x8000_4001u32 as i32, "D3D12CreateDevice must forward, not E_NOTIMPL");
+
+        assert_eq!(RoInitialize(1), 0);
+        let s: [u16; 3] = [b'G' as u16, b'D' as u16, b'K' as u16];
+        let mut hs = 0usize;
+        assert_eq!(WindowsCreateString(s.as_ptr(), 3, &mut hs), 0);
+        assert_eq!(WindowsGetStringLen(hs), 3);
+        assert_eq!(WindowsDeleteString(hs), 0);
+
+        let mut tq = 0usize;
+        assert_eq!(XTaskQueueCreate(0, 0, &mut tq), 0);
+        let mut uid = 0u64;
+        assert_eq!(XUserGetId(0, &mut uid), 0);
+        assert_ne!(uid, 0);
+        XTaskQueueCloseHandle(tq);
+
+        assert_eq!(DStorageSetConfiguration(0), 0);
+        let mut gi = 0usize;
+        let _ = GameInputCreate(&mut gi);
     }
 }
 "#,
