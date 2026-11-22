@@ -1,6 +1,6 @@
 [package]
 name = "percyscarlett"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license-file = "LICENSE"
 description = "Clean-room Rust Xbox Series X|S (Scarlett) bring-up & translation layer for Windows 10/11"
