@@ -74,6 +74,9 @@ fn main() {
         Some("stubgen") if args.len() >= 4 => {
             run_stubgen(Path::new(&args[2]), Path::new(&args[3]));
         }
+        Some("report") if args.len() >= 4 => {
+            write_bringup_report(Path::new(&args[2]), Path::new(&args[3]));
+        }
         _ => {
             println!("PercyScarlett v0.1.0 — Clean-Room Rust Scarlett Bring-Up Layer");
             println!("Usage:");
@@ -81,9 +84,44 @@ fn main() {
             println!("  percyscarlett plan <game_dir>");
             println!("  percyscarlett verify-dlls <game_dir>");
             println!("  percyscarlett stubgen <game.exe> <out_dir>");
+            println!("  percyscarlett report <game.exe> <report.json>");
             println!("  percyscarlett probe-mem");
             println!("  percyscarlett shims");
         }
+    }
+}
+
+fn write_bringup_report(exe_path: &Path, out_json: &Path) {
+    let Ok(data) = fs::read(exe_path) else {
+        eprintln!("Failed to read {}", exe_path.display());
+        return;
+    };
+    let Ok(pe) = pe64::parse_pe64(&data) else {
+        eprintln!("Invalid PE32+: {}", exe_path.display());
+        return;
+    };
+    let mut shims = Vec::new();
+    let mut total_funcs = 0usize;
+    for imp in &pe.imports {
+        total_funcs += imp.functions.len();
+        if let Some(s) = gdk::SHIM_SPECS.iter().find(|s| s.dll.eq_ignore_ascii_case(&imp.name)) {
+            shims.push(format!(
+                "    {{\"dll\":\"{}\",\"area\":\"{}\",\"status\":\"{}\",\"imports\":{}}}",
+                imp.name, s.area, s.status, imp.functions.len()
+            ));
+        }
+    }
+    let json = format!(
+        "{{\n  \"target\": \"{}\",\n  \"machine\": \"0x{:04x}\",\n  \"entry_rva\": \"0x{:x}\",\n  \"import_dlls\": {},\n  \"import_functions\": {},\n  \"matched_shims\": [\n{}\n  ]\n}}\n",
+        exe_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown"),
+        pe.machine,
+        pe.entry_rva,
+        pe.imports.len(),
+        total_funcs,
+        shims.join(",\n")
+    );
+    if fs::write(out_json, json).is_ok() {
+        println!("Wrote {}", out_json.display());
     }
 }
 

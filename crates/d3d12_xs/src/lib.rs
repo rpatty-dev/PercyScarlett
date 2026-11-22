@@ -1,3 +1,5 @@
+pub mod rdna2_hlsl;
+
 use std::ffi::{c_void, CString};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -48,6 +50,21 @@ pub fn cache_store_blob(tag: &str, key: &[u8], blob: &[u8]) {
         let p = dir.join(format!("{tag}_{:016x}.bin", fnv1a_64(key)));
         let _ = std::fs::write(p, blob);
     }
+}
+
+/// Translates an RDNA2 blob to HLSL (with disk cache) and returns the HLSL bytes.
+pub fn translate_and_cache_rdna2(
+    bytes: &[u8],
+    hint: rdna2_hlsl::ShaderStage,
+) -> (rdna2_hlsl::ShaderStage, String) {
+    if let Some(cached) = cache_load_blob(hint.as_str(), bytes) {
+        if let Ok(s) = String::from_utf8(cached) {
+            return (hint, s);
+        }
+    }
+    let (stage, hlsl, _) = rdna2_hlsl::lift_to_hlsl(bytes, hint);
+    cache_store_blob(hint.as_str(), bytes, hlsl.as_bytes());
+    (stage, hlsl)
 }
 
 #[cfg(windows)]
@@ -400,5 +417,10 @@ mod tests {
         let blob = b"\x44\x58\x42\x43_cached_pso";
         cache_store_blob("pso", key, blob);
         assert_eq!(cache_load_blob("pso", key).as_deref(), Some(blob.as_slice()));
+
+        let rdna2 = [0x00, 0x00, 0x81, 0xBF]; // s_endpgm
+        let (stage, hlsl) = translate_and_cache_rdna2(&rdna2, rdna2_hlsl::ShaderStage::Pixel);
+        assert_eq!(stage, rdna2_hlsl::ShaderStage::Pixel);
+        assert!(hlsl.contains("SV_TARGET"));
     }
 }
