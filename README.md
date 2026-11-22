@@ -1,4 +1,8 @@
-# PercyScarlett
+<p align="center">
+  <img src="assets/mascot.png" width="210" alt="PercyScarlett Harlequin Bunny Xbox Mascot" />
+</p>
+
+<h1 align="center">PercyScarlett</h1>
 
 **Clean-room Rust translation layer, GDK shim suite, and PE32+ inspection toolkit for running unencrypted Xbox Series X|S (Scarlett) executables natively on Windows x64 — built specifically for TheBig6 😉.**
 

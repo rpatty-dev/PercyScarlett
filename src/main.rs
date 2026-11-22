@@ -1,4 +1,5 @@
 mod gdk;
+mod mascot;
 mod pe64;
 mod pe_loader;
 mod shader_bench;
@@ -118,8 +119,11 @@ fn main() {
                 .unwrap_or(0);
             shader_bench::run_shader_benchmark(p, limit, dxil);
         }
+        Some("mascot") => {
+            mascot::print_mascot_banner();
+        }
         _ => {
-            println!("PercyScarlett v0.1.0 — Clean-Room Rust Scarlett Bring-Up Layer");
+            mascot::print_mascot_banner();
             println!("Usage:");
             println!("  percyscarlett inspect <game.exe>");
             println!("  percyscarlett plan <game_dir>");
