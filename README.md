@@ -220,3 +220,9 @@ PercyScarlett is an independent, clean-room interoperability research project li
 It contains no proprietary Xbox/Microsoft SDK headers, keys, or binaries, and does **not** decrypt, bypass, or strip retail DRM or encrypted `.xvc`/`.xvd` packages. Users must supply their own lawfully obtained, unencrypted executables.
 
 The Dashboard font **PercyPRO** is Inter Display 4.1 by The Inter Project Authors, renamed and bundled under the [SIL Open Font License 1.1](assets/fonts/OFL.txt). The PercyLicense does not apply to it.
+
+---
+
+## Support & Donations
+
+PercyScarlett is free and built out of passion for clean-room Xbox Series X|S & Windows compatibility research. If you'd ever like to kindly support ongoing development, hardware testing, and releases, **[GitHub Sponsors (@rpatty-dev)](https://github.com/sponsors/rpatty-dev)** keeps everything private and goes straight toward the project — no pressure at all, running the 10-second Self-Test helps hugely too!

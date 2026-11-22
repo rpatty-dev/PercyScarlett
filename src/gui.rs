@@ -1167,6 +1167,19 @@ impl eframe::App for DashboardApp {
                                     }
                                 }
                             });
+                            ui.add_space(12.0);
+                            ui.separator();
+                            ui.add_space(8.0);
+                            ui.label(RichText::new("Support Development").font(semibold(15.0)).color(WHITE));
+                            ui.label(
+                                RichText::new("PercyScarlett is free. If it helps or you'd like to kindly support ongoing R&D and testing hardware, any support is deeply appreciated!")
+                                    .size(12.5)
+                                    .color(DIM),
+                            );
+                            ui.add_space(8.0);
+                            if ui.button("Support via GitHub Sponsors (@rpatty-dev)").clicked() {
+                                ctx.open_url(egui::OpenUrl::new_tab("https://github.com/sponsors/rpatty-dev"));
+                            }
                         });
                     }
                     }
