@@ -130,7 +130,11 @@ pub unsafe extern "system" fn WaitOnAddress(
         8 => *(address as *const u64) == *(compare_address as *const u64),
         _ => false,
     };
-    if !equal { 1 } else { 1 }
+    // Wake* are no-ops here, so never block: yield and report a (spec-allowed) spurious wake.
+    if equal {
+        std::thread::yield_now();
+    }
+    1
 }
 
 #[no_mangle]

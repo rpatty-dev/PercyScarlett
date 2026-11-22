@@ -8,3 +8,4 @@ mount/
 launch_build.bat
 *.log
 tools/dxc/
+/dist/

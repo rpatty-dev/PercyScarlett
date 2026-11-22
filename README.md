@@ -188,14 +188,14 @@ cargo build --release --workspace
 
 ---
 
-## Tests (`17/17 passing`, `0` warnings)
+## Tests (`20/20 passing`)
 
 ```powershell
 cargo test --workspace
 ```
 
 - `e2e_bringup` (1): Synthetic PE32+ `scarlett_guest.exe` build, `inspect`, `stubgen`, and live execution across all **9** shim DLLs (including real hardware `D3D12XboxCreateDevice`, `WaitForOriginX`, `PresentX`, `XAudio2Create`)
-- `percyscarlett` (4): PE32+ parser, in-process PE32+ mapper + `.pdata` `RtlAddFunctionTable` execution (`pe_loader`), Win32 `VirtualAlloc` pool, live `kernel32.dll` forwarding
+- `percyscarlett` (6): Dashboard semver + PowerShell path quoting, PE32+ parser, in-process PE32+ mapper + `.pdata` `RtlAddFunctionTable` execution (`pe_loader`), Win32 `VirtualAlloc` pool, live `kernel32.dll` forwarding
 - `d3d12_xs` (5): Host `d3d12.dll` symbol forwarding, `ID3D12DeviceX` COM wrapper, RDNA2 ALU/SMEM/Mesh lifter, live `d3dcompiler_47.dll` `DXBC` compilation, and live `dxcompiler.dll` SM 6.6 `DXIL` compilation (`VS`/`PS`/`CS`/`Mesh`/`RT`) + `PresentX`/`CommandQueueXProxy`
 - `xmem` (1), `kernelx` (1), `xg_xs` (1), `xaudio2_9` (1), `xgameruntime` (1), `dstorage` (1), `winrt_xs` (1), `GameInput` (1): C-ABI exports, COM vtables, `HSTRING`, VFS rewrite, `XGameSave` disk persistence, KBM->Gamepad `GameInput`, `XAudio2Create` voices, and offline GDK runtime checks
 

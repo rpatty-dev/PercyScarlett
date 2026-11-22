@@ -3,19 +3,24 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
+use eframe::egui::{self, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
 use crate::gdk;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const REPO_RELEASES_URL: &str = "https://github.com/rpatty-dev/PercyScarlett/releases";
 
-const XBOX_GREEN: Color32 = Color32::from_rgb(82, 196, 64);
-const XBOX_DARK_GREEN: Color32 = Color32::from_rgb(16, 124, 16);
-const BG_DARK: Color32 = Color32::from_rgb(13, 16, 22);
-const CARD_BG: Color32 = Color32::from_rgb(22, 26, 35);
-const CARD_HOVER: Color32 = Color32::from_rgb(30, 36, 48);
-const BORDER_COL: Color32 = Color32::from_rgb(44, 52, 68);
+// Night-sky sunset palette with a console-style green for "ready" states.
+const NIGHT_TOP: Color32 = Color32::from_rgb(34, 14, 52);
+const NIGHT_BOTTOM: Color32 = Color32::from_rgb(8, 6, 16);
+const PINK: Color32 = Color32::from_rgb(255, 56, 140);
+const ORANGE: Color32 = Color32::from_rgb(255, 150, 60);
+const PURPLE: Color32 = Color32::from_rgb(110, 46, 190);
+const TEAL: Color32 = Color32::from_rgb(0, 200, 205);
+const READY_GREEN: Color32 = Color32::from_rgb(82, 196, 64);
+const CARD_BG: Color32 = Color32::from_rgba_premultiplied(20, 14, 34, 220);
+const BORDER_COL: Color32 = Color32::from_rgb(70, 48, 100);
+const TEXT_DIM: Color32 = Color32::from_rgb(200, 186, 220);
 
 const REQUIRED_RUNTIME_FILES: &[&str] = &[
     "kernelx.dll",
@@ -55,6 +60,11 @@ fn count_installed_runtime_files() -> (usize, usize, PathBuf) {
     (present, REQUIRED_RUNTIME_FILES.len(), check_dir)
 }
 
+/// Escape a value for a single-quoted PowerShell string literal.
+fn ps_quote(v: impl std::fmt::Display) -> String {
+    v.to_string().replace('\'', "''")
+}
+
 fn create_start_menu_shortcut(app_dir: &std::path::Path) -> Result<PathBuf, String> {
     let appdata = std::env::var("APPDATA").map_err(|_| "APPDATA not set".to_string())?;
     let programs = PathBuf::from(appdata)
@@ -67,10 +77,10 @@ fn create_start_menu_shortcut(app_dir: &std::path::Path) -> Result<PathBuf, Stri
     let target = app_dir.join("percyscarlett.exe");
     let ps = format!(
         "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('{}'); $s.TargetPath = '{}'; $s.WorkingDirectory = '{}'; $s.IconLocation = '{},0'; $s.Description = 'PercyScarlett Xbox Series X|S Dashboard'; $s.Save()",
-        lnk.display(),
-        target.display(),
-        app_dir.display(),
-        target.display()
+        ps_quote(lnk.display()),
+        ps_quote(target.display()),
+        ps_quote(app_dir.display()),
+        ps_quote(target.display())
     );
     let out = silent_cmd("powershell")
         .args(["-NoProfile", "-Command", &ps])
@@ -129,6 +139,7 @@ fn spawn_install_runtime_and_shortcut(
             ctx.request_repaint();
 
             let zip_str = zip_p.to_str().ok_or("bad zip path")?;
+            let zip_ps = ps_quote(zip_str);
             let mut downloaded = false;
             // Method 1: curl.exe direct download
             if let Ok(dl) = silent_cmd(curl).args(["-fsSL", "-o", zip_str, &dl_url]).output() {
@@ -141,7 +152,7 @@ fn spawn_install_runtime_and_shortcut(
                 *console.lock().unwrap() = "Primary curl failed; trying PowerShell + GitHub API backup...\n".into();
                 ctx.request_repaint();
                 let ps_dl = format!(
-                    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try {{ Invoke-WebRequest -UseBasicParsing -Uri '{dl_url}' -OutFile '{zip_str}' }} catch {{ $r = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/rpatty-dev/PercyScarlett/releases/latest'; $a = $r.assets | Where-Object {{ $_.name -like '*_Win64.zip' }} | Select-Object -First 1; if ($a) {{ Invoke-WebRequest -UseBasicParsing -Uri $a.browser_download_url -OutFile '{zip_str}' }} }}"
+                    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try {{ Invoke-WebRequest -UseBasicParsing -Uri '{dl_url}' -OutFile '{zip_ps}' }} catch {{ $r = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/rpatty-dev/PercyScarlett/releases/latest'; $a = $r.assets | Where-Object {{ $_.name -like '*_Win64.zip' }} | Select-Object -First 1; if ($a) {{ Invoke-WebRequest -UseBasicParsing -Uri $a.browser_download_url -OutFile '{zip_ps}' }} }}"
                 );
                 if let Ok(dl2) = silent_cmd("powershell").args(["-NoProfile", "-Command", &ps_dl]).output() {
                     if dl2.status.success() && zip_p.exists() && fs::metadata(&zip_p).map(|m| m.len() > 100_000).unwrap_or(false) {
@@ -157,8 +168,8 @@ fn spawn_install_runtime_and_shortcut(
             ctx.request_repaint();
             let ps_arg = format!(
                 "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
-                zip_p.display(),
-                install_dir.display()
+                ps_quote(zip_p.display()),
+                ps_quote(install_dir.display())
             );
             let ex = silent_cmd("powershell")
                 .args(["-NoProfile", "-Command", &ps_arg])
@@ -327,8 +338,8 @@ fn spawn_install_update(ver: String, upd: Arc<Mutex<UpdateState>>, ctx: egui::Co
             ctx.request_repaint();
             let ps_arg = format!(
                 "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
-                zip_p.display(),
-                tmp.display()
+                ps_quote(zip_p.display()),
+                ps_quote(tmp.display())
             );
             let ex = silent_cmd("powershell")
                 .args(["-NoProfile", "-Command", &ps_arg])
@@ -377,10 +388,20 @@ fn spawn_install_update(ver: String, upd: Arc<Mutex<UpdateState>>, ctx: egui::Co
 impl DashboardApp {
     fn new(cc: &eframe::CreationContext<'_>, mascot_rgba: Option<(Vec<u8>, u32, u32)>) -> Self {
         let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = BG_DARK;
-        visuals.window_fill = CARD_BG;
-        visuals.selection.bg_fill = XBOX_DARK_GREEN;
-        visuals.selection.stroke = Stroke::new(1.5_f32, XBOX_GREEN);
+        visuals.panel_fill = NIGHT_BOTTOM;
+        visuals.window_fill = Color32::from_rgb(26, 16, 42);
+        visuals.window_stroke = Stroke::new(1.0_f32, PINK);
+        visuals.extreme_bg_color = Color32::from_rgb(12, 8, 22);
+        visuals.selection.bg_fill = PINK.gamma_multiply(0.6);
+        visuals.selection.stroke = Stroke::new(1.5_f32, Color32::WHITE);
+        visuals.hyperlink_color = TEAL;
+        for w in [&mut visuals.widgets.inactive, &mut visuals.widgets.hovered, &mut visuals.widgets.active] {
+            w.corner_radius = egui::CornerRadius::same(4);
+        }
+        visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(44, 28, 70);
+        visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(70, 36, 104);
+        visuals.widgets.hovered.bg_stroke = Stroke::new(1.5_f32, Color32::WHITE);
+        visuals.widgets.active.weak_bg_fill = PINK;
         cc.egui_ctx.set_visuals(visuals);
 
         let update = Arc::new(Mutex::new(UpdateState::default()));
@@ -404,7 +425,7 @@ impl DashboardApp {
             log_xmem: false,
             mascot_tex,
             console: Arc::new(Mutex::new(
-                "PercyScarlett Series X Dashboard ready. Select a tile or action below.\n".into(),
+                "Dashboard ready. Pick a tile (arrow keys + Enter work too).\n".into(),
             )),
             busy: Arc::new(Mutex::new(false)),
             update,
@@ -414,10 +435,13 @@ impl DashboardApp {
     }
 
     fn run_cli(&self, ctx: &egui::Context, args: Vec<String>) {
-        if *self.busy.lock().unwrap() {
-            return;
+        {
+            let mut b = self.busy.lock().unwrap();
+            if *b {
+                return;
+            }
+            *b = true;
         }
-        *self.busy.lock().unwrap() = true;
         let console = Arc::clone(&self.console);
         let busy = Arc::clone(&self.busy);
         let wrap = self.wrap_d3d12;
@@ -453,234 +477,320 @@ impl DashboardApp {
     }
 }
 
+/// Four-corner colour gradient over `rect` (tl, tr, br, bl).
+fn gradient(rect: Rect, c: [Color32; 4]) -> egui::Shape {
+    let mut m = egui::Mesh::default();
+    m.colored_vertex(rect.left_top(), c[0]);
+    m.colored_vertex(rect.right_top(), c[1]);
+    m.colored_vertex(rect.right_bottom(), c[2]);
+    m.colored_vertex(rect.left_bottom(), c[3]);
+    m.add_triangle(0, 1, 2);
+    m.add_triangle(0, 2, 3);
+    egui::Shape::mesh(m)
+}
+
+/// Sunset hero art: purple -> pink -> orange sky with a striped setting sun.
+fn hero_art(rect: Rect) -> egui::Shape {
+    let mid = rect.left() + rect.width() * 0.55;
+    let left = Rect::from_min_max(rect.min, Pos2::new(mid, rect.bottom()));
+    let right = Rect::from_min_max(Pos2::new(mid, rect.top()), rect.max);
+    let deep = PURPLE.gamma_multiply(0.7);
+    let mut shapes = vec![
+        gradient(left, [deep, PINK, PINK, deep]),
+        gradient(right, [PINK, ORANGE, ORANGE, PINK]),
+    ];
+    let r = rect.height() * 0.62;
+    let c = Pos2::new(rect.right() - r - 40.0, rect.bottom() + r * 0.25);
+    shapes.push(egui::Shape::circle_filled(c, r, Color32::from_rgb(255, 214, 120)));
+    for k in 0..5 {
+        let y = c.y - r * 0.15 - k as f32 * r * 0.16;
+        let band = Rect::from_min_max(Pos2::new(c.x - r, y - 2.0 - k as f32 * 0.4), Pos2::new(c.x + r, y));
+        shapes.push(egui::Shape::rect_filled(band, 0.0_f32, ORANGE));
+    }
+    shapes.push(gradient(rect, [Color32::TRANSPARENT, Color32::TRANSPARENT, NIGHT_BOTTOM.gamma_multiply(0.5), NIGHT_BOTTOM.gamma_multiply(0.5)]));
+    egui::Shape::Vec(shapes)
+}
+
+fn card() -> egui::Frame {
+    egui::Frame::NONE
+        .fill(CARD_BG)
+        .stroke(Stroke::new(1.0_f32, BORDER_COL))
+        .corner_radius(6.0_f32)
+        .inner_margin(14.0)
+}
+
+fn heading(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text).strong().size(17.0).color(Color32::WHITE));
+    ui.add_space(6.0);
+}
+
+struct Tile {
+    title: &'static str,
+    sub: &'static str,
+    glyph: &'static str,
+    from: Color32,
+    to: Color32,
+}
+
+const TILES: [Tile; 4] = [
+    Tile { title: "Launch Overlay", sub: "Start the target .exe with the shim overlay", glyph: "▶", from: PINK, to: ORANGE },
+    Tile { title: "Verify Sidecars", sub: "Check the build folder's Xbox DLLs load", glyph: "✔", from: PURPLE, to: PINK },
+    Tile { title: "Benchmark Shaders", sub: "Recompile 500 RDNA2 shaders to DXIL", glyph: "⚡", from: ORANGE, to: PURPLE },
+    Tile { title: "Probe XMem", sub: "Allocate a 16 MiB physical test block", glyph: "💾", from: TEAL, to: PURPLE },
+];
+
+impl DashboardApp {
+    fn tile_args(&self, idx: usize) -> Vec<String> {
+        match idx {
+            0 => vec!["launch".into(), self.exe_path.clone()],
+            1 => vec!["verify-dlls".into(), self.build_dir.clone()],
+            2 => vec!["bench-shaders".into(), self.shaders_rpf.clone(), "--dxil".into(), "--limit".into(), "500".into()],
+            _ => vec!["probe-mem".into()],
+        }
+    }
+
+    fn install_runtime(&self, ctx: &egui::Context) {
+        spawn_install_runtime_and_shortcut(
+            Arc::clone(&self.console),
+            Arc::clone(&self.busy),
+            Arc::clone(&self.runtime_count),
+            ctx.clone(),
+        );
+    }
+
+    fn top_bar(&mut self, ui: &mut egui::Ui, is_busy: bool) {
+        ui.horizontal(|ui| {
+            if let Some(tex) = &self.mascot_tex {
+                ui.image((tex.id(), Vec2::splat(38.0)));
+            }
+            ui.vertical(|ui| {
+                ui.label(RichText::new("PERCYSCARLETT").strong().size(20.0).color(Color32::WHITE));
+                ui.label(RichText::new("Xbox Series X|S translation layer · PercyLicense v1.2").size(11.0).color(TEXT_DIM));
+            });
+            ui.add_space(28.0);
+            for (t, label) in [
+                (DashTab::Home, "Home"),
+                (DashTab::Shims, "Shims"),
+                (DashTab::Shaders, "Shaders"),
+                (DashTab::Settings, "Settings"),
+            ] {
+                let active = self.tab == t;
+                let text = RichText::new(label).size(15.0).color(if active { Color32::WHITE } else { TEXT_DIM });
+                let resp = ui.add(egui::Button::new(if active { text.strong() } else { text }).frame(false));
+                if active {
+                    ui.painter().hline(resp.rect.x_range(), resp.rect.bottom() + 6.0, Stroke::new(3.0_f32, PINK));
+                }
+                if resp.clicked() {
+                    self.tab = t;
+                }
+                ui.add_space(10.0);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(format!("v{APP_VERSION}")).size(12.0).color(TEXT_DIM));
+                let upd_avail = self.update.lock().unwrap().available.clone();
+                if let Some((new_ver, _)) = upd_avail {
+                    let pill = egui::Button::new(RichText::new(format!("Update to v{new_ver}")).size(12.0).strong().color(Color32::BLACK))
+                        .fill(ORANGE)
+                        .corner_radius(12.0_f32);
+                    if ui.add(pill).clicked() {
+                        self.update.lock().unwrap().show_modal = true;
+                    }
+                }
+                if is_busy {
+                    ui.spinner();
+                }
+            });
+        });
+    }
+
+    fn home(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_busy: bool) {
+        let (rt_have, rt_total, rt_dir) = self.runtime_count.lock().unwrap().clone();
+
+        // Hero banner: art is painted behind the content once its size is known.
+        let art = ui.painter().add(egui::Shape::Noop);
+        let hero = egui::Frame::NONE.inner_margin(egui::Margin::symmetric(24, 20)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.set_min_height(96.0);
+            ui.label(RichText::new("JUMP BACK IN").strong().size(32.0).color(Color32::WHITE));
+            ui.add_space(4.0);
+            if rt_have < rt_total {
+                ui.label(RichText::new(format!("Standalone mode: {rt_have}/{rt_total} runtime DLLs found")).size(13.0).color(Color32::WHITE));
+                ui.add_space(8.0);
+                let btn = egui::Button::new(RichText::new("⬇  Download runtime & add to Start Menu").strong().color(Color32::BLACK))
+                    .fill(Color32::WHITE)
+                    .corner_radius(4.0_f32);
+                if ui.add_enabled(!is_busy, btn).clicked() {
+                    self.install_runtime(ctx);
+                }
+            } else {
+                ui.label(RichText::new(format!("✔ Runtime ready · {rt_have}/{rt_total} DLLs in {}", rt_dir.display())).size(13.0).color(Color32::WHITE));
+                ui.add_space(8.0);
+                if ui.add_enabled(!is_busy, egui::Button::new("Reinstall / add to Start Menu")).clicked() {
+                    self.install_runtime(ctx);
+                }
+            }
+        });
+        let hero_rect = hero.response.rect;
+        ui.painter().with_clip_rect(hero_rect).set(art, hero_art(hero_rect));
+
+        ui.add_space(18.0);
+        heading(ui, "Quick actions");
+
+        // Console-style tile row: arrows move focus, Enter or click runs it.
+        let mut activate = None;
+        if ctx.memory(|m| m.focused().is_none()) {
+            ctx.input(|i| {
+                if i.key_pressed(egui::Key::ArrowRight) {
+                    self.selected_tile = (self.selected_tile + 1) % TILES.len();
+                }
+                if i.key_pressed(egui::Key::ArrowLeft) {
+                    self.selected_tile = (self.selected_tile + TILES.len() - 1) % TILES.len();
+                }
+                if i.key_pressed(egui::Key::Enter) {
+                    activate = Some(self.selected_tile);
+                }
+            });
+        }
+        let gap = 14.0;
+        let tile_w = ((ui.available_width() - gap * 3.0) / 4.0).max(150.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for (idx, t) in TILES.iter().enumerate() {
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(tile_w, 150.0), Sense::click());
+                let focused = self.selected_tile == idx;
+                let r = if focused || resp.hovered() { rect.expand(3.0) } else { rect };
+                let p = ui.painter();
+                p.add(gradient(r, [t.from, t.to, t.to.gamma_multiply(0.5), t.from.gamma_multiply(0.5)]));
+                let scrim = Rect::from_min_max(Pos2::new(r.left(), r.center().y - 10.0), r.max);
+                let shade = Color32::from_black_alpha(190);
+                p.add(gradient(scrim, [Color32::TRANSPARENT, Color32::TRANSPARENT, shade, shade]));
+                p.text(r.left_top() + Vec2::new(14.0, 10.0), egui::Align2::LEFT_TOP, t.glyph, FontId::proportional(32.0), Color32::WHITE);
+                p.text(r.left_bottom() + Vec2::new(14.0, -60.0), egui::Align2::LEFT_TOP, t.title, FontId::proportional(17.0), Color32::WHITE);
+                let sub = p.layout(t.sub.to_string(), FontId::proportional(11.5), TEXT_DIM, r.width() - 28.0);
+                p.galley(r.left_bottom() + Vec2::new(14.0, -38.0), sub, TEXT_DIM);
+                if focused {
+                    p.rect_stroke(r, 0.0_f32, Stroke::new(3.0_f32, Color32::WHITE), StrokeKind::Outside);
+                }
+                let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                if resp.clicked() {
+                    self.selected_tile = idx;
+                    activate = Some(idx);
+                }
+            }
+        });
+        if let Some(idx) = activate {
+            self.run_cli(ctx, self.tile_args(idx));
+        }
+
+        ui.add_space(18.0);
+        card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Target .exe").strong());
+                ui.add(egui::TextEdit::singleline(&mut self.exe_path).desired_width(420.0));
+                if ui.button("▶ Launch Overlay").clicked() {
+                    self.run_cli(ctx, vec!["launch".into(), self.exe_path.clone()]);
+                }
+                if ui.button("Run In-Process").clicked() {
+                    self.run_cli(ctx, vec!["run".into(), self.exe_path.clone()]);
+                }
+                if ui.button("Inspect PE32+").clicked() {
+                    self.run_cli(ctx, vec!["inspect".into(), self.exe_path.clone()]);
+                }
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Build folder").strong());
+                ui.add(egui::TextEdit::singleline(&mut self.build_dir).desired_width(420.0));
+                if ui.button("Verify Sidecar DLLs").clicked() {
+                    self.run_cli(ctx, vec!["verify-dlls".into(), self.build_dir.clone()]);
+                }
+                if ui.button("Plan Bring-Up").clicked() {
+                    self.run_cli(ctx, vec!["plan".into(), self.build_dir.clone()]);
+                }
+            });
+        });
+    }
+}
+
 impl eframe::App for DashboardApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let is_busy = *self.busy.lock().unwrap();
 
-        egui::TopBottomPanel::top("xbox_top_bar")
-            .frame(egui::Frame::NONE.fill(Color32::from_rgb(16, 20, 28)).inner_margin(12.0))
+        egui::TopBottomPanel::top("top_bar")
+            .frame(egui::Frame::NONE.fill(NIGHT_TOP).inner_margin(egui::Margin::symmetric(18, 12)))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if let Some(tex) = &self.mascot_tex {
-                        ui.image((tex.id(), Vec2::splat(34.0)));
-                    }
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new("PercyScarlett").strong().size(18.0).color(Color32::WHITE));
-                        ui.label(RichText::new("Xbox Series X|S Translation Dashboard · PercyLicense v1.2").size(11.0).color(XBOX_GREEN));
-                    });
-                    ui.add_space(24.0);
-                    for (t, label) in [
-                        (DashTab::Home, "Home"),
-                        (DashTab::Shims, "Shim Matrix (9 DLLs)"),
-                        (DashTab::Shaders, "DXIL Shaders (21,522)"),
-                        (DashTab::Settings, "Overlay & Env"),
-                    ] {
-                        let active = self.tab == t;
-                        let btn = egui::Button::new(
-                            RichText::new(label)
-                                .size(13.0)
-                                .color(if active { Color32::WHITE } else { Color32::from_rgb(160, 170, 185) }),
-                        )
-                        .fill(if active { XBOX_DARK_GREEN } else { CARD_BG })
-                        .stroke(Stroke::new(1.0_f32, if active { XBOX_GREEN } else { BORDER_COL }))
-                        .corner_radius(16.0_f32);
-                        if ui.add(btn).clicked() {
-                            self.tab = t;
-                        }
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(format!("v{APP_VERSION} · PercyPlayer")).size(12.0).color(XBOX_GREEN));
-                        let upd_avail = self.update.lock().unwrap().available.clone();
-                        if let Some((new_ver, _)) = upd_avail {
-                            let pill = egui::Button::new(
-                                RichText::new(format!("★ Update Available: v{new_ver}"))
-                                    .size(11.5)
-                                    .strong()
-                                    .color(Color32::BLACK),
-                            )
-                            .fill(Color32::from_rgb(255, 196, 64))
-                            .corner_radius(12.0_f32);
-                            if ui.add(pill).clicked() {
-                                self.update.lock().unwrap().show_modal = true;
-                            }
-                        }
-                        if is_busy {
-                            ui.spinner();
-                        }
-                    });
-                });
+                self.top_bar(ui, is_busy);
+                let r = ui.clip_rect();
+                ui.painter().hline(r.x_range(), r.bottom() - 1.0, Stroke::new(2.0_f32, PINK.gamma_multiply(0.8)));
             });
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(BG_DARK).inner_margin(18.0))
+            .frame(egui::Frame::NONE.fill(NIGHT_BOTTOM).inner_margin(22.0))
             .show(ctx, |ui| {
-                match self.tab {
-                    DashTab::Home => {
-                        let (rt_have, rt_total, rt_dir) = self.runtime_count.lock().unwrap().clone();
-                        if rt_have < rt_total {
-                            egui::Frame::NONE
-                                .fill(Color32::from_rgb(20, 46, 26))
-                                .stroke(Stroke::new(1.5_f32, XBOX_GREEN))
-                                .corner_radius(10.0_f32)
-                                .inner_margin(12.0)
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "Standalone Mode ({rt_have}/{rt_total} runtime DLLs found) — Download shims & DXC and install to Windows Start Menu?"
-                                            ))
-                                            .strong()
-                                            .color(Color32::WHITE),
-                                        );
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            let dl_btn = egui::Button::new(
-                                                RichText::new("⬇ Download Files & Add to Start Menu").strong().color(Color32::BLACK),
-                                            )
-                                            .fill(XBOX_GREEN);
-                                            if ui.add_enabled(!is_busy, dl_btn).clicked() {
-                                                spawn_install_runtime_and_shortcut(
-                                                    Arc::clone(&self.console),
-                                                    Arc::clone(&self.busy),
-                                                    Arc::clone(&self.runtime_count),
-                                                    ctx.clone(),
-                                                );
-                                            }
-                                        });
-                                    });
-                                });
-                            ui.add_space(10.0);
-                        } else {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(format!("Runtime Ready ({rt_have}/{rt_total} DLLs @ {})", rt_dir.display())).size(11.5).color(XBOX_GREEN));
-                                if ui.small_button("Re-download / Add to Start Menu").clicked() && !is_busy {
-                                    spawn_install_runtime_and_shortcut(
-                                        Arc::clone(&self.console),
-                                        Arc::clone(&self.busy),
-                                        Arc::clone(&self.runtime_count),
-                                        ctx.clone(),
-                                    );
-                                }
-                            });
-                            ui.add_space(6.0);
-                        }
-                        ui.label(RichText::new("Jump Back In").strong().size(16.0).color(Color32::WHITE));
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            let tiles = [
-                                ("TheBig6 😉", "RPF9 + 6 Sidecars + 21,522 Shims Ready", "Awaiting Monday .exe"),
-                                ("Scarlett GDK Sample", "Live Hardware D3D12 + PresentX + XAudio2", "Verified on Win11"),
-                                ("Sidecar Verifier", "6/6 Xbox DLLs Live-Loaded (LoadLibraryW)", "Ready"),
-                                ("PE32+ Overlay", "0 GB NTFS Junction + CreateProcess", "Hybrid Mode"),
-                            ];
-                            for (idx, (title, sub, pill)) in tiles.iter().enumerate() {
-                                let sel = self.selected_tile == idx;
-                                let frame = egui::Frame::NONE
-                                    .fill(if sel { CARD_HOVER } else { CARD_BG })
-                                    .stroke(Stroke::new(if sel { 2.0_f32 } else { 1.0_f32 }, if sel { XBOX_GREEN } else { BORDER_COL }))
-                                    .corner_radius(12.0_f32)
-                                    .inner_margin(14.0);
-                                let resp = frame.show(ui, |ui| {
-                                    ui.set_width(220.0);
-                                    ui.set_height(106.0);
-                                    ui.label(RichText::new(*title).strong().size(15.0).color(Color32::WHITE));
-                                    ui.add_space(4.0);
-                                    ui.label(RichText::new(*sub).size(11.5).color(Color32::from_rgb(165, 175, 192)));
-                                    ui.add_space(10.0);
-                                    ui.label(RichText::new(*pill).size(11.0).color(XBOX_GREEN));
-                                });
-                                if resp.response.interact(egui::Sense::click()).clicked() {
-                                    self.selected_tile = idx;
-                                }
-                            }
-                        });
+                let bg = ui.clip_rect();
+                ui.painter().add(gradient(bg, [NIGHT_TOP, NIGHT_TOP, NIGHT_BOTTOM, NIGHT_BOTTOM]));
 
-                        ui.add_space(14.0);
-                        egui::Frame::NONE
-                            .fill(CARD_BG)
-                            .stroke(Stroke::new(1.0_f32, BORDER_COL))
-                            .corner_radius(12.0_f32)
-                            .inner_margin(14.0)
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new("Target .exe:").strong().size(13.0));
-                                    ui.add(egui::TextEdit::singleline(&mut self.exe_path).desired_width(420.0));
-                                    if ui.button(RichText::new("▶ Launch Overlay").color(Color32::WHITE)).clicked() {
-                                        self.run_cli(ctx, vec!["launch".into(), self.exe_path.clone()]);
-                                    }
-                                    if ui.button("Run In-Process").clicked() {
-                                        self.run_cli(ctx, vec!["run".into(), self.exe_path.clone()]);
-                                    }
-                                    if ui.button("Inspect PE32+").clicked() {
-                                        self.run_cli(ctx, vec!["inspect".into(), self.exe_path.clone()]);
-                                    }
-                                });
-                                ui.add_space(6.0);
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new("Build Dir:").strong().size(13.0));
-                                    ui.add(egui::TextEdit::singleline(&mut self.build_dir).desired_width(420.0));
-                                    if ui.button("Verify Sidecar DLLs").clicked() {
-                                        self.run_cli(ctx, vec!["verify-dlls".into(), self.build_dir.clone()]);
-                                    }
-                                    if ui.button("Plan Bring-Up").clicked() {
-                                        self.run_cli(ctx, vec!["plan".into(), self.build_dir.clone()]);
-                                    }
-                                    if ui.button("Probe XMem").clicked() {
-                                        self.run_cli(ctx, vec!["probe-mem".into()]);
-                                    }
-                                });
-                            });
-                    }
+                match self.tab {
+                    DashTab::Home => self.home(ui, ctx, is_busy),
                     DashTab::Shims => {
-                        ui.label(RichText::new("Compiled Rust Shim Suite (9 cdylib DLLs)").strong().size(16.0).color(Color32::WHITE));
-                        ui.add_space(8.0);
-                        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                            egui::Grid::new("shim_grid").striped(true).spacing([18.0, 6.0]).show(ui, |ui| {
-                                ui.label(RichText::new("DLL").strong().color(XBOX_GREEN));
-                                ui.label(RichText::new("Subsystem").strong().color(XBOX_GREEN));
-                                ui.label(RichText::new("Status").strong().color(XBOX_GREEN));
-                                ui.label(RichText::new("Implemented Surface").strong().color(XBOX_GREEN));
-                                ui.end_row();
-                                for s in gdk::SHIM_SPECS {
-                                    ui.label(RichText::new(s.dll).strong().color(Color32::WHITE));
-                                    ui.label(s.area);
-                                    ui.label(RichText::new(s.status).color(if s.status.contains("Live-DLL") { XBOX_GREEN } else { Color32::from_rgb(245, 190, 90) }));
-                                    ui.label(s.role);
+                        heading(ui, "Compiled Rust shim suite (9 DLLs)");
+                        card().show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                                egui::Grid::new("shim_grid").striped(true).spacing([18.0, 8.0]).show(ui, |ui| {
+                                    for h in ["DLL", "Subsystem", "Status", "Implemented surface"] {
+                                        ui.label(RichText::new(h).strong().color(PINK));
+                                    }
                                     ui.end_row();
-                                }
+                                    for s in gdk::SHIM_SPECS {
+                                        ui.label(RichText::new(s.dll).strong().color(Color32::WHITE));
+                                        ui.label(s.area);
+                                        ui.label(RichText::new(s.status).color(if s.status.contains("Live-DLL") { READY_GREEN } else { ORANGE }));
+                                        ui.label(s.role);
+                                        ui.end_row();
+                                    }
+                                });
                             });
                         });
                     }
                     DashTab::Shaders => {
-                        ui.label(RichText::new("RDNA2 (GFX10.3) -> SM 6.6 DXIL Recompiler").strong().size(16.0).color(Color32::WHITE));
-                        ui.label(RichText::new("Verified: 21,522 / 21,522 (100.0%, fail=0) via dxcompiler.dll (VS=89, PS=7730, CS=51, Mesh=13588, RT=64)").color(XBOX_GREEN));
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            ui.label("shaders.rpf:");
-                            ui.add(egui::TextEdit::singleline(&mut self.shaders_rpf).desired_width(450.0));
-                            if ui.button("Benchmark 500 DXIL").clicked() {
-                                self.run_cli(ctx, vec!["bench-shaders".into(), self.shaders_rpf.clone(), "--dxil".into(), "--limit".into(), "500".into()]);
-                            }
-                            if ui.button("Benchmark All 21,522").clicked() {
-                                self.run_cli(ctx, vec!["bench-shaders".into(), self.shaders_rpf.clone(), "--dxil".into()]);
-                            }
+                        heading(ui, "RDNA2 (GFX10.3) → SM 6.6 DXIL recompiler");
+                        card().show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(RichText::new("Verified: 21,522 / 21,522 (100.0%, fail=0) via dxcompiler.dll (VS=89, PS=7730, CS=51, Mesh=13588, RT=64)").color(READY_GREEN));
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("shaders.rpf").strong());
+                                ui.add(egui::TextEdit::singleline(&mut self.shaders_rpf).desired_width(450.0));
+                                if ui.button("Benchmark 500").clicked() {
+                                    self.run_cli(ctx, self.tile_args(2));
+                                }
+                                if ui.button("Benchmark all 21,522").clicked() {
+                                    self.run_cli(ctx, vec!["bench-shaders".into(), self.shaders_rpf.clone(), "--dxil".into()]);
+                                }
+                            });
                         });
                     }
                     DashTab::Settings => {
-                        ui.label(RichText::new("Runtime Telemetry & Compatibility Flags").strong().size(16.0).color(Color32::WHITE));
-                        ui.add_space(8.0);
-                        ui.checkbox(&mut self.wrap_d3d12, "PERCY_D3D12_WRAP=1 (Enable ID3D12DeviceX COM proxy)");
-                        ui.checkbox(&mut self.log_d3d12, "PERCY_D3D12_LOG (Trace PresentX & D3D12.X calls)");
-                        ui.checkbox(&mut self.log_xmem, "PERCY_XMEM_LOG (Trace XMemAlloc / VirtualAlloc pool)");
+                        heading(ui, "Runtime telemetry & compatibility flags");
+                        card().show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.checkbox(&mut self.wrap_d3d12, "PERCY_D3D12_WRAP=1 (enable ID3D12DeviceX COM proxy)");
+                            ui.checkbox(&mut self.log_d3d12, "PERCY_D3D12_LOG (trace PresentX & D3D12.X calls)");
+                            ui.checkbox(&mut self.log_xmem, "PERCY_XMEM_LOG (trace XMemAlloc / VirtualAlloc pool)");
+                        });
                     }
                 }
 
-                ui.add_space(12.0);
-                ui.label(RichText::new("Live Telemetry Console").strong().size(13.0).color(XBOX_GREEN));
+                ui.add_space(16.0);
+                ui.label(RichText::new("Console").strong().size(13.0).color(TEXT_DIM));
+                ui.add_space(4.0);
                 let log_text = self.console.lock().unwrap().clone();
                 egui::Frame::NONE
-                    .fill(Color32::from_rgb(9, 11, 16))
+                    .fill(Color32::from_rgb(10, 7, 18))
                     .stroke(Stroke::new(1.0_f32, BORDER_COL))
-                    .corner_radius(8.0_f32)
+                    .corner_radius(6.0_f32)
                     .inner_margin(10.0)
                     .show(ui, |ui| {
                         egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
@@ -688,7 +798,7 @@ impl eframe::App for DashboardApp {
                                 egui::TextEdit::multiline(&mut log_text.as_str())
                                     .font(egui::TextStyle::Monospace)
                                     .desired_width(f32::INFINITY)
-                                    .desired_rows(11),
+                                    .desired_rows(9),
                             );
                         });
                     });
@@ -701,22 +811,22 @@ impl eframe::App for DashboardApp {
         if show_modal {
             if let Some((new_ver, rel_url)) = avail {
                 let mut open = true;
-                egui::Window::new("Update Available")
+                egui::Window::new("Update available")
                     .open(&mut open)
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                     .show(ctx, |ui| {
-                        ui.label(RichText::new(format!("Installed: v{APP_VERSION} -> Latest: v{new_ver}")).strong());
+                        ui.label(RichText::new(format!("Installed v{APP_VERSION} → latest v{new_ver}")).strong());
                         ui.add_space(6.0);
                         if !upd_status.is_empty() {
-                            ui.label(RichText::new(&upd_status).color(XBOX_GREEN));
+                            ui.label(RichText::new(&upd_status).color(ORANGE));
                         }
                         ui.horizontal(|ui| {
-                            if ui.add_enabled(!installing, egui::Button::new("Download & Install")).clicked() {
+                            if ui.add_enabled(!installing, egui::Button::new("Download & install")).clicked() {
                                 spawn_install_update(new_ver.clone(), Arc::clone(&self.update), ctx.clone());
                             }
-                            if ui.button("Open Release Page").clicked() {
+                            if ui.button("Open release page").clicked() {
                                 ctx.open_url(egui::OpenUrl::new_tab(rel_url));
                             }
                         });
@@ -726,17 +836,6 @@ impl eframe::App for DashboardApp {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn semver_compare_works() {
-        assert!(parse_semver("v0.2.1") > parse_semver("0.2.0"));
-        assert_eq!(parse_semver("v1.4.6"), Some((1, 4, 6)));
     }
 }
 
@@ -771,7 +870,7 @@ pub fn run_dashboard() -> eframe::Result<()> {
             let rgba = img.to_rgba8();
             (rgba.as_raw().to_vec(), rgba.width(), rgba.height())
         });
-    let mut vb = egui::ViewportBuilder::default().with_inner_size([1080.0, 680.0]);
+    let mut vb = egui::ViewportBuilder::default().with_inner_size([1180.0, 780.0]).with_min_inner_size([980.0, 680.0]);
     if let Some((ref raw, w, h)) = mascot_rgba {
         vb = vb.with_icon(egui::IconData {
             rgba: raw.clone(),
@@ -788,4 +887,20 @@ pub fn run_dashboard() -> eframe::Result<()> {
         opts,
         Box::new(move |cc| Ok(Box::new(DashboardApp::new(cc, mascot_rgba)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semver_compare_works() {
+        assert!(parse_semver("v0.2.1") > parse_semver("0.2.0"));
+        assert_eq!(parse_semver("v1.4.6"), Some((1, 4, 6)));
+    }
+
+    #[test]
+    fn ps_quote_escapes_single_quotes() {
+        assert_eq!(ps_quote("a'b"), "a''b");
+    }
 }
