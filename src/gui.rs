@@ -236,8 +236,23 @@ struct DashboardApp {
     update: Arc<Mutex<UpdateState>>,
     runtime_count: Arc<Mutex<(usize, usize, PathBuf)>>,
     self_test: Arc<Mutex<Option<crate::self_test::SelfTestResult>>>,
+    action_modal: Arc<Mutex<Option<ActionModal>>>,
     selected_tile: usize,
     tab_switches: f32,
+}
+
+#[derive(Clone)]
+enum ActionPhase {
+    Running,
+    Success(String),
+    Failed(String, String), // summary, prefilled github issue url
+}
+
+#[derive(Clone)]
+struct ActionModal {
+    title: String,
+    phase: ActionPhase,
+    started: std::time::Instant,
 }
 
 #[derive(Default)]
@@ -437,6 +452,7 @@ impl DashboardApp {
             update,
             runtime_count: Arc::new(Mutex::new(count_installed_runtime_files())),
             self_test: Arc::new(Mutex::new(None)),
+            action_modal: Arc::new(Mutex::new(None)),
             selected_tile: 0,
             tab_switches: 0.0,
         }
@@ -450,8 +466,26 @@ impl DashboardApp {
             }
             *b = true;
         }
+        let action_title = match args.first().map(String::as_str) {
+            Some("verify-dlls") => "Verifying Sidecar DLLs",
+            Some("launch") => "Launching Overlay",
+            Some("run") => "Running PE32+ In-Process",
+            Some("inspect") => "Inspecting PE32+ Binary",
+            Some("plan") => "Planning Bring-Up",
+            Some("bench-shaders") => "Benchmarking RDNA2 Shaders",
+            Some("probe-mem") => "Probing XMem Physical Pool",
+            _ => "Running Action",
+        }
+        .to_string();
+        *self.action_modal.lock().unwrap() = Some(ActionModal {
+            title: action_title.clone(),
+            phase: ActionPhase::Running,
+            started: std::time::Instant::now(),
+        });
+
         let console = Arc::clone(&self.console);
         let busy = Arc::clone(&self.busy);
+        let modal = Arc::clone(&self.action_modal);
         let wrap = self.wrap_d3d12;
         let log_d3d = self.log_d3d12;
         let log_xmem = self.log_xmem;
@@ -470,15 +504,51 @@ impl DashboardApp {
             if log_xmem {
                 cmd.env("PERCY_XMEM_LOG", "percy_xmem.log");
             }
-            let out = match cmd.output() {
+            let (out, ok, summary) = match cmd.output() {
                 Ok(o) => {
                     let s1 = String::from_utf8_lossy(&o.stdout);
                     let s2 = String::from_utf8_lossy(&o.stderr);
-                    format!("$ percyscarlett {}\n{s1}{s2}\n", args.join(" "))
+                    let combined = format!("{s1}{s2}");
+                    let lo = combined.to_ascii_lowercase();
+                    let failed = !o.status.success()
+                        || lo.contains("failed") && !lo.contains("0 failed")
+                        || lo.contains("error:")
+                        || lo.contains("read error")
+                        || lo.contains("not found")
+                        || lo.contains("could not");
+                    let first_line = combined
+                        .lines()
+                        .rev()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or(if failed { "Command failed" } else { "Completed" })
+                        .trim()
+                        .to_string();
+                    (format!("$ percyscarlett {}\n{combined}\n", args.join(" ")), !failed, first_line)
                 }
-                Err(e) => format!("Failed to run command: {e}\n"),
+                Err(e) => (format!("Failed to run command: {e}\n"), false, format!("Spawn error: {e}")),
+            };
+            let phase = if ok {
+                ActionPhase::Success(summary)
+            } else {
+                let snippet: String = out.chars().take(1200).collect();
+                let title = format!("[Action Failed] {action_title} (v{APP_VERSION})");
+                let body = format!(
+                    "### Action\n`{action_title}` (`percyscarlett {}`)\n\n### Version / OS\n`v{APP_VERSION}` / `{}` `{}`\n\n### Output\n```text\n{snippet}\n```\n",
+                    args.join(" "),
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                );
+                let issue_url = format!(
+                    "https://github.com/rpatty-dev/PercyScarlett/issues/new?title={}&body={}",
+                    crate::self_test::url_encode(&title),
+                    crate::self_test::url_encode(&body)
+                );
+                ActionPhase::Failed(summary, issue_url)
             };
             *console.lock().unwrap() = out;
+            if let Some(m) = modal.lock().unwrap().as_mut() {
+                m.phase = phase;
+            }
             *busy.lock().unwrap() = false;
             egui_ctx.request_repaint();
         });
@@ -626,10 +696,16 @@ impl DashboardApp {
                 .unwrap_or_else(|| PathBuf::from("."))
         };
         let st_slot = Arc::clone(&self.self_test);
+        let modal = Arc::clone(&self.action_modal);
         let console = Arc::clone(&self.console);
         let busy = Arc::clone(&self.busy);
         let ctx2 = ctx.clone();
         *busy.lock().unwrap() = true;
+        *modal.lock().unwrap() = Some(ActionModal {
+            title: "Running Hardware Self-Test".into(),
+            phase: ActionPhase::Running,
+            started: std::time::Instant::now(),
+        });
         std::thread::spawn(move || {
             let old_path = std::env::var("PATH").unwrap_or_default();
             std::env::set_var("PATH", format!("{};{old_path}", shim_dir.display()));
@@ -638,6 +714,13 @@ impl DashboardApp {
                 let mut c = console.lock().unwrap();
                 c.clear();
                 c.push_str(&format!("{}\n\n{}\n", res.summary, res.markdown));
+            }
+            if let Some(m) = modal.lock().unwrap().as_mut() {
+                m.phase = if res.passed == res.total {
+                    ActionPhase::Success(res.summary.clone())
+                } else {
+                    ActionPhase::Failed(res.summary.clone(), res.issue_url.clone())
+                };
             }
             *st_slot.lock().unwrap() = Some(res);
             *busy.lock().unwrap() = false;
@@ -688,6 +771,20 @@ impl DashboardApp {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(format!("v{APP_VERSION}")).size(12.0).color(DIM));
+                if ui.small_button("Feedback").on_hover_text("Send feedback or bug report to GitHub").clicked() {
+                    let t = format!("[Feedback] PercyScarlett v{APP_VERSION}");
+                    let b = format!(
+                        "### Environment\n`v{APP_VERSION}` / `{}` `{}`\n\n### Feedback\n_Describe what worked, what broke, or what you'd like added:_\n",
+                        std::env::consts::OS,
+                        std::env::consts::ARCH
+                    );
+                    let url = format!(
+                        "https://github.com/rpatty-dev/PercyScarlett/issues/new?title={}&body={}",
+                        crate::self_test::url_encode(&t),
+                        crate::self_test::url_encode(&b)
+                    );
+                    ctx.open_url(egui::OpenUrl::new_tab(url));
+                }
                 let upd_avail = self.update.lock().unwrap().available.clone();
                 if let Some((new_ver, _)) = upd_avail {
                     if ui.add(primary(&format!("Update to v{new_ver}")).corner_radius(14.0_f32)).clicked() {
@@ -1026,6 +1123,85 @@ impl eframe::App for DashboardApp {
                 if !open {
                     self.update.lock().unwrap().show_modal = false;
                 }
+            }
+        }
+
+        // Apple FaceID-style animated modal for every action button
+        let modal_snap = self.action_modal.lock().unwrap().clone();
+        if let Some(m) = modal_snap {
+            let mut open = true;
+            let mut close_now = false;
+            let is_running = matches!(m.phase, ActionPhase::Running);
+            if !is_running && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                close_now = true;
+            }
+            egui::Window::new(RichText::new(&m.title).font(semibold(16.0)).color(WHITE))
+                .id(egui::Id::new("action_faceid_modal"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .fixed_size([360.0, 230.0])
+                .frame(egui::Frame::window(&ctx.style()).inner_margin(24.0).corner_radius(20.0_f32))
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(76.0), egui::Sense::hover());
+                        let c = rect.center();
+                        let p = ui.painter();
+                        let t = m.started.elapsed().as_secs_f32();
+                        match &m.phase {
+                            ActionPhase::Running => {
+                                ctx.request_repaint();
+                                p.circle_stroke(c, 32.0, Stroke::new(3.0_f32, Color32::from_rgb(45, 55, 48)));
+                                let segs = 14usize;
+                                let a0 = t * 5.2;
+                                for i in 0..segs {
+                                    let f0 = a0 + (i as f32) * 0.16;
+                                    let f1 = f0 + 0.16;
+                                    let p0 = c + Vec2::new(f0.cos(), f0.sin()) * 32.0;
+                                    let p1 = c + Vec2::new(f1.cos(), f1.sin()) * 32.0;
+                                    p.line_segment([p0, p1], Stroke::new(3.5_f32, GREEN));
+                                }
+                                ui.add_space(12.0);
+                                ui.label(RichText::new("Working…").font(semibold(15.0)).color(WHITE));
+                            }
+                            ActionPhase::Success(msg) => {
+                                p.circle_filled(c, 32.0, Color32::from_rgba_premultiplied(24, 120, 44, 70));
+                                p.circle_stroke(c, 32.0, Stroke::new(3.0_f32, GREEN));
+                                p.line_segment([c + Vec2::new(-12.0, 1.0), c + Vec2::new(-3.0, 10.0)], Stroke::new(3.5_f32, GREEN));
+                                p.line_segment([c + Vec2::new(-3.0, 10.0), c + Vec2::new(14.0, -10.0)], Stroke::new(3.5_f32, GREEN));
+                                ui.add_space(10.0);
+                                ui.label(RichText::new("Verified").font(semibold(16.0)).color(GREEN));
+                                ui.label(RichText::new(msg).size(12.5).color(DIM));
+                                ui.add_space(12.0);
+                                if ui.add(primary("Done")).clicked() {
+                                    close_now = true;
+                                }
+                            }
+                            ActionPhase::Failed(msg, issue_url) => {
+                                let red = Color32::from_rgb(235, 72, 72);
+                                p.circle_filled(c, 32.0, Color32::from_rgba_premultiplied(160, 35, 35, 70));
+                                p.circle_stroke(c, 32.0, Stroke::new(3.0_f32, red));
+                                p.line_segment([c + Vec2::new(-10.0, -10.0), c + Vec2::new(10.0, 10.0)], Stroke::new(3.5_f32, red));
+                                p.line_segment([c + Vec2::new(10.0, -10.0), c + Vec2::new(-10.0, 10.0)], Stroke::new(3.5_f32, red));
+                                ui.add_space(10.0);
+                                ui.label(RichText::new("Action Failed").font(semibold(16.0)).color(red));
+                                ui.label(RichText::new(msg).size(12.0).color(DIM));
+                                ui.add_space(12.0);
+                                ui.horizontal(|ui| {
+                                    if ui.add(primary("Submit GitHub Issue")).clicked() {
+                                        ctx.open_url(egui::OpenUrl::new_tab(issue_url.clone()));
+                                    }
+                                    if ui.button("Close").clicked() {
+                                        close_now = true;
+                                    }
+                                });
+                            }
+                        }
+                    });
+                });
+            if !open || close_now {
+                *self.action_modal.lock().unwrap() = None;
             }
         }
     }

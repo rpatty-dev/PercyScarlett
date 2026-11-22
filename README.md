@@ -15,6 +15,20 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
 
 ---
 
+## How to Test (30 Seconds — No Game Files Needed)
+
+**Option A — 1-Click Script (Easiest):**
+1. Download **[`Run_SelfTest_And_Report.bat`](https://github.com/rpatty-dev/PercyScarlett/releases/latest/download/Run_SelfTest_And_Report.bat)** from the [Latest Release](https://github.com/rpatty-dev/PercyScarlett/releases/latest).
+2. Double-click it (it downloads the runtime bundle automatically, runs all **8 hardware/DX12/shader checks**, and opens your browser with a **pre-filled GitHub Issue**).
+3. Click **Submit new issue** on GitHub!
+
+**Option B — Inside the Dashboard App:**
+1. Download & extract **`PercyScarlett_vX.Y.Z_Win64.zip`** (or run `percyscarlett.exe` and click **Download runtime & add to Start Menu**).
+2. Click **Run Self-Test** (on **Home** or **Settings**).
+3. Click **Submit GitHub Issue (8/8)** when it finishes!
+
+---
+
 ## Live Status & Surface Coverage
 
 ![PercyScarlett Live Subsystem Readiness](docs/status.svg)
