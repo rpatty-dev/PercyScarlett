@@ -27,17 +27,25 @@ Scanning the 16 shipped DLLs and `MicrosoftGame.Config` in the Codename G6 build
 
 ---
 
-## 2. Verified Runtime Primitives (Already Working on Windows x64)
+## 2. Verified Runtime Primitives & Live DLL Loading (Windows 11 x64)
 
-- **Physical Memory Pool (`src/xmem.rs`):**
-  `percyscarlett probe-mem` allocates and tracks Scarlett-aligned physical memory blocks via Win32 `VirtualAlloc` (`MEM_COMMIT | MEM_RESERVE`, `PAGE_READWRITE`):
+- **Live Windows `LoadLibraryW` Verification (`percyscarlett verify-dlls`):**
+  All 6 shipped non-CRT Xbox/Scarlett sidecar DLLs in the Codename G6 build load cleanly on Windows 11 x64 using PercyScarlett's compiled `xmem.dll` and `d3d12_xs.dll` shims + host `System32`:
   ```text
-  Allocated 16 MiB Scarlett physical test block at 0x2bae8890000 (active=16777216 B)
+  [PASS] amd_fidelityfx_loader_xbox.dll loaded at 0x7ffbfa7b0000
+  [PASS] amd_fidelityfx_upscaler_xbox.dll loaded at 0x7ffb89170000
+  [PASS] Bink2Scarlett.dll loaded at 0x7ffba2b80000
+  [PASS] libHttpClient.GDK.dll loaded at 0x7ffb89140000
+  [PASS] XboxBvhBuilder.dll loaded at 0x7ffb89160000
+  [PASS] XCurl.dll loaded at 0x7ffbb1ee0000
+  DLL verification: 6 passed, 0 failed
   ```
-- **Win32 Symbol Forwarding (`src/gdk.rs`):**
-  `gdk::tests::resolves_kernel32_gettickcount_on_windows` proves live `GetModuleHandleA` / `GetProcAddress` resolution against host `kernel32.dll`.
-- **Zero-Copy PE32+ Inspector (`src/pe64.rs`):**
-  `pe64::tests::parses_minimal_pe64_header` + live `plan` scan verify deterministic IAT/EAT inspection across all 16 Codename G6 DLLs.
+- **Compiled `xmem.dll` (`crates/xmem`):**
+  Exports `XMemAlloc`, `XMemFree`, `XMemAllocDefault`, `XMemFreeDefault`, `XMemAllocPhysical`, `XMemFreePhysical`, `XMemGetWorkingSetStatistics`, and `XMemVirtualQuery` backed by Win32 `VirtualAlloc` / `VirtualFree` / `VirtualQueryEx` (with `PERCY_XMEM_LOG` call tracing).
+- **Compiled `d3d12_xs.dll` (`crates/d3d12_xs`):**
+  Exports `D3D12CreateDevice`, `D3D12SerializeRootSignature`, `D3D12SerializeVersionedRootSignature`, `D3D12CreateRootSignatureDeserializer`, `D3D12CreateVersionedRootSignatureDeserializer`, `D3D12GetDebugInterface`, and `D3D12EnableExperimentalFeatures` forwarding to host `d3d12.dll` (masking Scarlett-specific root signature flags cleanly).
+- **Auto-Stub Generator (`percyscarlett stubgen <exe> <out_dir>`):**
+  Automatically generates compilable Rust `cdylib` shim crates for any remaining GDK DLL imports discovered when the main `.exe` drops.
 
 ---
 

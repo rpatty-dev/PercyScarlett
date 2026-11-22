@@ -3,5 +3,13 @@
 version = 4
 
 [[package]]
+name = "d3d12_xs"
+version = "0.1.0"
+
+[[package]]
 name = "percyscarlett"
+version = "0.1.0"
+
+[[package]]
+name = "xmem"
 version = "0.1.0"

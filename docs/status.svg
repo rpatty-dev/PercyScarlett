@@ -14,8 +14,8 @@
   <rect x="0.5" y="0.5" width="879" height="444" rx="10" fill="#0d1117" stroke="#30363d" />
 
   <!-- Header -->
-  <text x="28" y="38" class="title">PercyScarlett — Live Subsystem Readiness: 34.2%</text>
-  <text x="28" y="60" class="sub">Windows 10/11 x64 · MIT Clean-Room · Pure Rust · Cargo Test: 3/3 passing · Target: Durango / Scarlett GDK</text>
+  <text x="28" y="38" class="title">PercyScarlett — Live Subsystem Readiness: 58.3%</text>
+  <text x="28" y="60" class="sub">Windows 10/11 x64 · MIT Clean-Room · Pure Rust · Workspace Tests: 5/5 passing · Sidecar DLLs: 6/6 live-loaded</text>
 
   <!-- Divider -->
   <line x1="28" y1="76" x2="852" y2="76" stroke="#21262d" stroke-width="1" />
@@ -32,7 +32,7 @@
   <text x="486" y="98" class="legend">Grey = Planned / Out of Scope</text>
 
   <!-- Row 1 -->
-  <text x="28" y="138" class="row-label">PE32+ &amp; GDK Manifest Inspector (pe64.rs)</text>
+  <text x="28" y="138" class="row-label">PE32+ Inspector, verify-dlls &amp; stubgen</text>
   <rect x="430" y="122" width="144" height="22" rx="11" fill="#2ea043" />
   <text x="502" y="137" text-anchor="middle" class="pill-text">Verified</text>
   <rect x="598" y="128" width="190" height="10" rx="5" fill="#21262d" />
@@ -41,41 +41,43 @@
   <line x1="28" y1="156" x2="852" y2="156" stroke="#161b22" stroke-width="1" />
 
   <!-- Row 2 -->
-  <text x="28" y="182" class="row-label">Physical Memory Pool (xmem.rs)</text>
-  <rect x="430" y="166" width="144" height="22" rx="11" fill="#8957e5" />
-  <text x="502" y="181" text-anchor="middle" class="pill-text">Unit-Tested</text>
+  <text x="28" y="182" class="row-label">xmem.dll Physical Pool (crates/xmem)</text>
+  <rect x="430" y="166" width="144" height="22" rx="11" fill="#2ea043" />
+  <text x="502" y="181" text-anchor="middle" class="pill-text">Live-DLL Verified</text>
   <rect x="598" y="172" width="190" height="10" rx="5" fill="#21262d" />
-  <rect x="598" y="172" width="114" height="10" rx="5" fill="#8957e5" />
-  <text x="852" y="182" text-anchor="end" class="pct">60%</text>
+  <rect x="598" y="172" width="190" height="10" rx="5" fill="#2ea043" />
+  <text x="852" y="182" text-anchor="end" class="pct">100%</text>
   <line x1="28" y1="200" x2="852" y2="200" stroke="#161b22" stroke-width="1" />
 
   <!-- Row 3 -->
-  <text x="28" y="226" class="row-label">GDK Shim Registry &amp; Forwarder (gdk.rs)</text>
+  <text x="28" y="226" class="row-label">d3d12_xs.dll D3D12 Proxy (crates/d3d12_xs)</text>
   <rect x="430" y="210" width="144" height="22" rx="11" fill="#8957e5" />
   <text x="502" y="225" text-anchor="middle" class="pill-text">Unit-Tested</text>
   <rect x="598" y="216" width="190" height="10" rx="5" fill="#21262d" />
-  <rect x="598" y="216" width="85.5" height="10" rx="5" fill="#8957e5" />
-  <text x="852" y="226" text-anchor="end" class="pct">45%</text>
+  <rect x="598" y="216" width="133" height="10" rx="5" fill="#8957e5" />
+  <text x="852" y="226" text-anchor="end" class="pct">70%</text>
   <line x1="28" y1="244" x2="852" y2="244" stroke="#161b22" stroke-width="1" />
 
   <!-- Row 4 -->
-  <text x="28" y="270" class="row-label">d3d12_xs.dll &amp; xg_xs.dll Graphics Bridge</text>
-  <rect x="430" y="254" width="144" height="22" rx="11" fill="#6e7681" />
-  <text x="502" y="269" text-anchor="middle" class="pill-text">Planned</text>
+  <text x="28" y="270" class="row-label">GDK Shim Registry &amp; Forwarder (gdk.rs)</text>
+  <rect x="430" y="254" width="144" height="22" rx="11" fill="#8957e5" />
+  <text x="502" y="269" text-anchor="middle" class="pill-text">Unit-Tested</text>
   <rect x="598" y="260" width="190" height="10" rx="5" fill="#21262d" />
-  <text x="852" y="270" text-anchor="end" class="pct">0%</text>
+  <rect x="598" y="260" width="104.5" height="10" rx="5" fill="#8957e5" />
+  <text x="852" y="270" text-anchor="end" class="pct">55%</text>
   <line x1="28" y1="288" x2="852" y2="288" stroke="#161b22" stroke-width="1" />
 
   <!-- Row 5 -->
-  <text x="28" y="314" class="row-label">xgameruntime / dstorage / winrt_xs</text>
-  <rect x="430" y="298" width="144" height="22" rx="11" fill="#6e7681" />
-  <text x="502" y="313" text-anchor="middle" class="pill-text">Planned</text>
+  <text x="28" y="314" class="row-label">XAudio2_9 (Host) &amp; GameInput Shims</text>
+  <rect x="430" y="298" width="144" height="22" rx="11" fill="#d29922" />
+  <text x="502" y="313" text-anchor="middle" class="pill-text">In Progress</text>
   <rect x="598" y="304" width="190" height="10" rx="5" fill="#21262d" />
-  <text x="852" y="314" text-anchor="end" class="pct">0%</text>
+  <rect x="598" y="304" width="47.5" height="10" rx="5" fill="#d29922" />
+  <text x="852" y="314" text-anchor="end" class="pct">25%</text>
   <line x1="28" y1="332" x2="852" y2="332" stroke="#161b22" stroke-width="1" />
 
   <!-- Row 6 -->
-  <text x="28" y="358" class="row-label">XAudio2_9 &amp; GameInput Runtime Shims</text>
+  <text x="28" y="358" class="row-label">xgameruntime / dstorage / winrt_xs (stubgen)</text>
   <rect x="430" y="342" width="144" height="22" rx="11" fill="#6e7681" />
   <text x="502" y="357" text-anchor="middle" class="pill-text">Planned</text>
   <rect x="598" y="348" width="190" height="10" rx="5" fill="#21262d" />

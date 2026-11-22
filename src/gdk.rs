@@ -92,6 +92,57 @@ pub fn summarize_bringup_with_pkg(pe: &Pe64Summary, pkg_exports: &HashMap<String
     out
 }
 
+pub fn collect_missing_by_dll(
+    pe: &Pe64Summary,
+    pkg_exports: &HashMap<String, HashSet<String>>,
+) -> Vec<(String, Vec<String>)> {
+    let mut out = Vec::new();
+    for imp in &pe.imports {
+        let key = imp.name.to_ascii_lowercase();
+        if SHIM_SPECS.iter().any(|s| s.dll.eq_ignore_ascii_case(&imp.name)) {
+            continue;
+        }
+        if let Some(exports) = pkg_exports.get(&key) {
+            let unres: Vec<String> = imp
+                .functions
+                .iter()
+                .filter(|f| !f.starts_with("ord#") && !exports.contains(f.as_str()))
+                .cloned()
+                .collect();
+            if !unres.is_empty() {
+                out.push((imp.name.clone(), unres));
+            }
+        } else {
+            match check_host_dll(&imp.name, &imp.functions) {
+                HostCheck::Resolved => {}
+                HostCheck::Partial(unres) => out.push((imp.name.clone(), unres)),
+                HostCheck::NotFound => out.push((imp.name.clone(), imp.functions.clone())),
+            }
+        }
+    }
+    out
+}
+
+pub fn generate_rust_stub_crate(dll_name: &str, funcs: &[String]) -> (String, String) {
+    let stem = dll_name.strip_suffix(".dll").or_else(|| dll_name.strip_suffix(".DLL")).unwrap_or(dll_name);
+    let crate_name = stem.to_ascii_lowercase().replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "_");
+    let cargo = format!(
+        "[package]\nname = \"{crate_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\nname = \"{crate_name}\"\ncrate-type = [\"cdylib\"]\n"
+    );
+    let mut lib = String::from(
+        "use std::fs::OpenOptions;\nuse std::io::Write;\n\nfn log_stub(name: &str, a0: usize, a1: usize, a2: usize, a3: usize) {\n    if let Ok(p) = std::env::var(\"PERCY_STUB_LOG\") {\n        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(p) {\n            let _ = writeln!(f, \"{name}(0x{a0:x}, 0x{a1:x}, 0x{a2:x}, 0x{a3:x})\");\n        }\n    }\n    if let Ok(ab) = std::env::var(\"PERCY_STUB_ABORT\") {\n        if !ab.is_empty() && name.contains(&ab) {\n            std::process::abort();\n        }\n    }\n}\n\n"
+    );
+    for f in funcs {
+        if f.starts_with("ord#") {
+            continue;
+        }
+        lib.push_str(&format!(
+            "#[no_mangle]\npub unsafe extern \"system\" fn {f}(a0: usize, a1: usize, a2: usize, a3: usize) -> usize {{\n    log_stub(\"{dll_name}!{f}\", a0, a1, a2, a3);\n    0\n}}\n\n"
+        ));
+    }
+    (cargo, lib)
+}
+
 enum HostCheck {
     Resolved,
     Partial(Vec<String>),
