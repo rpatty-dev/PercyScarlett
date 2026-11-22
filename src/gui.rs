@@ -128,12 +128,29 @@ fn spawn_install_runtime_and_shortcut(
             *console.lock().unwrap() = format!("Downloading {dl_url}...\n");
             ctx.request_repaint();
 
-            let dl = silent_cmd(curl)
-                .args(["-fsSL", "-o", zip_p.to_str().ok_or("bad zip path")?, &dl_url])
-                .output()
-                .map_err(|e| format!("curl error: {e}"))?;
-            if !dl.status.success() {
-                return Err(format!("Download failed ({}) for {dl_url}", dl.status));
+            let zip_str = zip_p.to_str().ok_or("bad zip path")?;
+            let mut downloaded = false;
+            // Method 1: curl.exe direct download
+            if let Ok(dl) = silent_cmd(curl).args(["-fsSL", "-o", zip_str, &dl_url]).output() {
+                if dl.status.success() && zip_p.exists() && fs::metadata(&zip_p).map(|m| m.len() > 100_000).unwrap_or(false) {
+                    downloaded = true;
+                }
+            }
+            // Method 2 (Backup): PowerShell Invoke-WebRequest (WinHTTP/system proxy) + GitHub API fallback
+            if !downloaded {
+                *console.lock().unwrap() = "Primary curl failed; trying PowerShell + GitHub API backup...\n".into();
+                ctx.request_repaint();
+                let ps_dl = format!(
+                    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try {{ Invoke-WebRequest -UseBasicParsing -Uri '{dl_url}' -OutFile '{zip_str}' }} catch {{ $r = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/rpatty-dev/PercyScarlett/releases/latest'; $a = $r.assets | Where-Object {{ $_.name -like '*_Win64.zip' }} | Select-Object -First 1; if ($a) {{ Invoke-WebRequest -UseBasicParsing -Uri $a.browser_download_url -OutFile '{zip_str}' }} }}"
+                );
+                if let Ok(dl2) = silent_cmd("powershell").args(["-NoProfile", "-Command", &ps_dl]).output() {
+                    if dl2.status.success() && zip_p.exists() && fs::metadata(&zip_p).map(|m| m.len() > 100_000).unwrap_or(false) {
+                        downloaded = true;
+                    }
+                }
+            }
+            if !downloaded {
+                return Err(format!("Download failed for both curl and PowerShell backup ({dl_url})"));
             }
 
             *console.lock().unwrap() = format!("Extracting runtime files to {}...\n", install_dir.display());
@@ -724,6 +741,30 @@ mod tests {
 }
 
 pub fn run_dashboard() -> eframe::Result<()> {
+    #[cfg(windows)]
+    {
+        extern "system" {
+            fn CreateMutexW(attrs: *const std::ffi::c_void, initial: i32, name: *const u16) -> usize;
+            fn GetLastError() -> u32;
+            fn FindWindowW(cls: *const u16, title: *const u16) -> usize;
+            fn ShowWindow(hwnd: usize, cmd: i32) -> i32;
+            fn SetForegroundWindow(hwnd: usize) -> i32;
+        }
+        let mname: Vec<u16> = "Local\\PercyScarlettDashboard\0".encode_utf16().collect();
+        unsafe {
+            let _h = CreateMutexW(std::ptr::null(), 1, mname.as_ptr());
+            if GetLastError() == 183 {
+                let wtitle: Vec<u16> = "PercyScarlett — Xbox Series X|S Dashboard\0".encode_utf16().collect();
+                let hwnd = FindWindowW(std::ptr::null(), wtitle.as_ptr());
+                if hwnd != 0 {
+                    ShowWindow(hwnd, 9); // SW_RESTORE
+                    SetForegroundWindow(hwnd);
+                }
+                return Ok(());
+            }
+        }
+    }
+
     let mascot_rgba = image::load_from_memory(include_bytes!("../assets/mascot.png"))
         .ok()
         .map(|img| {
