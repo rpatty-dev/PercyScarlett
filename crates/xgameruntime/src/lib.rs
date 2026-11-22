@@ -125,6 +125,61 @@ pub unsafe extern "system" fn XUserGetGamertag(
 }
 
 #[no_mangle]
+pub unsafe extern "system" fn XUserGetState(_user: *mut c_void, out_state: *mut u32) -> i32 {
+    if out_state.is_null() {
+        return E_POINTER;
+    }
+    *out_state = 0; // XUserState::SignedIn
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XUserCheckPrivilege(
+    _user: *mut c_void,
+    _options: u32,
+    _privilege: u32,
+    out_has_privilege: *mut i32,
+    out_reason: *mut u32,
+) -> i32 {
+    if !out_has_privilege.is_null() {
+        *out_has_privilege = 1;
+    }
+    if !out_reason.is_null() {
+        *out_reason = 0;
+    }
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XblInitialize(_args: *const c_void) -> i32 {
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XblCleanup(_async_block: *mut XAsyncBlock) -> i32 {
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XblContextCreateHandle(
+    _user: *mut c_void,
+    out_ctx: *mut *mut c_void,
+) -> i32 {
+    if out_ctx.is_null() {
+        return E_POINTER;
+    }
+    *out_ctx = Box::into_raw(Box::new(0x5053_5842u32)) as *mut c_void;
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XblContextCloseHandle(ctx: *mut c_void) {
+    if !ctx.is_null() {
+        drop(Box::from_raw(ctx as *mut u32));
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "system" fn XGameSaveInitializeProvider(
     _user: *mut c_void,
     _scid: *const u8,
@@ -194,6 +249,11 @@ mod tests {
             let mut used = 0usize;
             assert_eq!(XUserGetGamertag(user, 0, tag.len(), tag.as_mut_ptr(), &mut used), S_OK);
             assert_eq!(&tag[..used], b"PercyPlayer\0");
+
+            assert_eq!(XblInitialize(std::ptr::null()), S_OK);
+            let mut xbl_ctx: *mut c_void = std::ptr::null_mut();
+            assert_eq!(XblContextCreateHandle(user, &mut xbl_ctx), S_OK);
+            XblContextCloseHandle(xbl_ctx);
 
             XUserCloseHandle(user);
             XTaskQueueCloseHandle(q);

@@ -120,6 +120,30 @@ unsafe extern "system" fn factory_create_queue(
     *out_q = Box::into_raw(q) as *mut c_void;
     S_OK
 }
+fn resolve_vfs_path(raw: &str) -> PathBuf {
+    let norm = raw.replace('/', "\\");
+    let lower = norm.to_ascii_lowercase();
+    let (drive, rest) = if lower.starts_with("g:\\") {
+        ("PERCY_VFS_G", &norm[3..])
+    } else if lower.starts_with("t:\\") {
+        ("PERCY_VFS_T", &norm[3..])
+    } else if lower.starts_with("s:\\") {
+        ("PERCY_VFS_S", &norm[3..])
+    } else {
+        return PathBuf::from(norm);
+    };
+    let base = std::env::var(drive).map(PathBuf::from).unwrap_or_else(|_| {
+        if drive == "PERCY_VFS_T" {
+            std::env::temp_dir().join("percy_T")
+        } else if drive == "PERCY_VFS_S" {
+            std::env::temp_dir().join("percy_S")
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        }
+    });
+    base.join(rest)
+}
+
 unsafe extern "system" fn factory_open_file(
     _this: *mut c_void,
     path_w: *const u16,
@@ -134,7 +158,7 @@ unsafe extern "system" fn factory_open_file(
         len += 1;
     }
     let s = String::from_utf16_lossy(std::slice::from_raw_parts(path_w, len));
-    let p = PathBuf::from(s);
+    let p = resolve_vfs_path(&s);
     let Ok(meta) = std::fs::metadata(&p) else {
         *out_file = std::ptr::null_mut();
         return E_FAIL;
@@ -352,6 +376,9 @@ mod tests {
 
             assert_eq!((q_vtbl.release)(queue), 0);
             assert_eq!((f_vtbl.release)(factory), 0);
+
+            std::env::set_var("PERCY_VFS_G", r"D:\PercyScarlett_Mount");
+            assert_eq!(resolve_vfs_path(r"G:\data\levels.rpf"), PathBuf::from(r"D:\PercyScarlett_Mount\data\levels.rpf"));
         }
     }
 }
