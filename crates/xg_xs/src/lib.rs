@@ -131,6 +131,41 @@ pub unsafe extern "system" fn XGComputeTexture2DLayout(
     S_OK
 }
 
+#[inline]
+fn morton_2d(x: u32, y: u32) -> u32 {
+    let mut xx = x & 0xFFFF;
+    let mut yy = y & 0xFFFF;
+    xx = (xx | (xx << 8)) & 0x00FF_00FF;
+    xx = (xx | (xx << 4)) & 0x0F0F_0F0F;
+    xx = (xx | (xx << 2)) & 0x3333_3333;
+    xx = (xx | (xx << 1)) & 0x5555_5555;
+    yy = (yy | (yy << 8)) & 0x00FF_00FF;
+    yy = (yy | (yy << 4)) & 0x0F0F_0F0F;
+    yy = (yy | (yy << 2)) & 0x3333_3333;
+    yy = (yy | (yy << 1)) & 0x5555_5555;
+    xx | (yy << 1)
+}
+
+/// Clean-room GFX10.3 2D_THIN micro-tile swizzle/unswizzle over 8x8 element/block tiles.
+pub fn swizzle_2d_thin(src: &[u8], dst: &mut [u8], width_blocks: u32, height_blocks: u32, bpb: u32, to_tiled: bool) {
+    let wb = width_blocks.max(1) as usize;
+    let hb = height_blocks.max(1) as usize;
+    let stride = bpb.max(1) as usize;
+    let tiles_x = (wb + 7) / 8;
+    for y in 0..hb {
+        for x in 0..wb {
+            let lin_off = (y * wb + x) * stride;
+            let tile_idx = (y / 8) * tiles_x + (x / 8);
+            let in_tile = morton_2d((x & 7) as u32, (y & 7) as u32) as usize;
+            let tile_off = (tile_idx * 64 + in_tile) * stride;
+            let (s_off, d_off) = if to_tiled { (lin_off, tile_off) } else { (tile_off, lin_off) };
+            if s_off + stride <= src.len() && d_off + stride <= dst.len() {
+                dst[d_off..d_off + stride].copy_from_slice(&src[s_off..s_off + stride]);
+            }
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn XGTileTexture2D(
     src_linear: *const u8,
@@ -177,6 +212,14 @@ mod tests {
             assert!(!comp.is_null());
             let vtbl = &*(*(comp as *const *const XgComputerVtbl));
             assert_eq!((vtbl.release)(comp), 0);
+
+            let lin: Vec<u8> = (0..64 * 4).map(|i| (i & 0xFF) as u8).collect();
+            let mut tiled = vec![0u8; 64 * 4];
+            let mut back = vec![0u8; 64 * 4];
+            swizzle_2d_thin(&lin, &mut tiled, 8, 8, 4, true);
+            assert_ne!(tiled, lin);
+            swizzle_2d_thin(&tiled, &mut back, 8, 8, 4, false);
+            assert_eq!(back, lin);
         }
     }
 }

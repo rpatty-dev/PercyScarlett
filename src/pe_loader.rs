@@ -9,6 +9,29 @@ extern "system" {
     fn LoadLibraryA(name: *const i8) -> usize;
     fn GetProcAddress(module: usize, name: *const i8) -> usize;
     fn RtlAddFunctionTable(function_table: *const c_void, entry_count: u32, base_address: u64) -> u8;
+    fn RtlPcToFileHeader(pc_value: *const c_void, base_of_image: *mut *mut c_void) -> *mut c_void;
+}
+
+static MAPPED_RANGES: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
+
+/// Redirected `RtlPcToFileHeader` so MSVC C++ `throw` / SEH inside manually mapped PEs resolves `ImageBase`.
+#[cfg(windows)]
+unsafe extern "system" fn percy_rtl_pc_to_file_header(
+    pc_value: *const c_void,
+    base_of_image: *mut *mut c_void,
+) -> *mut c_void {
+    let pc = pc_value as usize;
+    if let Ok(ranges) = MAPPED_RANGES.lock() {
+        for &(start, end) in ranges.iter() {
+            if pc >= start && pc < end {
+                if !base_of_image.is_null() {
+                    *base_of_image = start as *mut c_void;
+                }
+                return start as *mut c_void;
+            }
+        }
+    }
+    RtlPcToFileHeader(pc_value, base_of_image)
 }
 
 unsafe extern "system" fn unresolved_xbox_stub() -> i32 {
@@ -223,9 +246,16 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
                         if hint_rva + 2 < size_of_image {
                             let fn_name_ptr = base_u8.add(hint_rva + 2) as *const i8;
                             if hmod != 0 {
-                                addr = GetProcAddress(hmod, fn_name_ptr);
-                            }
-                            if addr == 0 {
+                                let name_str = read_cstr_mem(fn_name_ptr as *const u8);
+                                if name_str == "RtlPcToFileHeader" {
+                                    addr = percy_rtl_pc_to_file_header as *const () as usize;
+                                } else {
+                                    addr = GetProcAddress(hmod, fn_name_ptr);
+                                }
+                                if addr == 0 {
+                                    sym_label = format!("{dll_name}!{name_str}");
+                                }
+                            } else {
                                 let s = read_cstr_mem(fn_name_ptr as *const u8);
                                 sym_label = format!("{dll_name}!{s}");
                             }
@@ -262,6 +292,10 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
             };
             let mut old = 0u32;
             VirtualProtect(base_u8.add(vaddr) as *mut c_void, vsize, prot, &mut old);
+        }
+
+        if let Ok(mut ranges) = MAPPED_RANGES.lock() {
+            ranges.push((base as usize, base as usize + size_of_image));
         }
 
         // Register sanitized .pdata SEH table (directory index 3)
@@ -503,5 +537,10 @@ mod tests {
         assert_eq!(rc, 7);
         assert_eq!(stats.pdata_entries, 1);
         assert_eq!(stats.static_tls_bytes, 32);
+
+        let mut out_base: *mut c_void = std::ptr::null_mut();
+        let ret = unsafe { percy_rtl_pc_to_file_header((stats.mapped_base + 0x1002) as *const c_void, &mut out_base) };
+        assert_eq!(ret as u64, stats.mapped_base);
+        assert_eq!(out_base as u64, stats.mapped_base);
     }
 }

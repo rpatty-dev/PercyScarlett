@@ -99,15 +99,17 @@ fn main() {
             #[cfg(windows)]
             {
                 let exe_path = Path::new(&args[2]);
+                let dry_run = args.iter().any(|a| a == "--dry-run");
                 let shim_dir = std::env::current_exe()
                     .ok()
                     .and_then(|p| p.parent().map(|d| d.to_path_buf()))
                     .unwrap_or_else(|| Path::new(".").to_path_buf());
                 match fs::read(exe_path) {
-                    Ok(data) => match pe_loader::load_and_run_pe64(&data, &shim_dir, true) {
+                    Ok(data) => match pe_loader::load_and_run_pe64(&data, &shim_dir, !dry_run) {
                         Ok((st, rc)) => {
+                            let verb = if dry_run { "Dry-run mapped" } else { "Executed" };
                             println!(
-                                "Executed {} (base=0x{:x}, entry=0x{:x}, pdata={}, tls_cb={}, tls_bytes={}, relocs={}, resolved={}, stubbed={}) -> rc={rc}",
+                                "{verb} {} (base=0x{:x}, entry=0x{:x}, pdata={}, tls_cb={}, tls_bytes={}, relocs={}, resolved={}, stubbed={}) -> rc={rc}",
                                 exe_path.display(),
                                 st.mapped_base,
                                 st.entry_va,

@@ -217,19 +217,27 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
             };
             format!("sop1_0x{op:02x} s{sdst}, s{ssrc0}")
         } else if (w0 >> 26) == 0x3E {
-            // EXP (64-bit)
+            // EXP (64-bit), including compr=1 FP16-packed exports
             len_words = 2;
             is_export = true;
             let target = (w0 >> 4) & 0x3F;
             let en = w0 & 0xF;
+            let compr = ((w0 >> 10) & 1) != 0;
             let vs = [w1 & 0xFF, (w1 >> 8) & 0xFF, (w1 >> 16) & 0xFF, (w1 >> 24) & 0xFF];
             if target == 20 {
                 is_export_prim = true;
             }
-            let val = format!(
-                "float4(asfloat(v[{}]), asfloat(v[{}]), asfloat(v[{}]), asfloat(v[{}]))",
-                vs[0], vs[1], vs[2], vs[3]
-            );
+            let val = if compr {
+                format!(
+                    "float4(f16tof32(v[{}] & 0xFFFFu), f16tof32(v[{}] >> 16), f16tof32(v[{}] & 0xFFFFu), f16tof32(v[{}] >> 16))",
+                    vs[0], vs[0], vs[1], vs[1]
+                )
+            } else {
+                format!(
+                    "float4(asfloat(v[{}]), asfloat(v[{}]), asfloat(v[{}]), asfloat(v[{}]))",
+                    vs[0], vs[1], vs[2], vs[3]
+                )
+            };
             match target {
                 12 => hlsl_stmt = format!("exp_pos0 = {val};"),
                 0..=7 => hlsl_stmt = format!("exp_mrt[{target}] = {val};"),
@@ -361,7 +369,15 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                 );
             }
             format!("mimg_0x{op:02x} v{vdata}, v{vaddr}, t#{tex_idx}, s#{samp_idx}")
-        } else if (w0 >> 26) == 0x34 || (w0 >> 26) == 0x37 || (w0 >> 26) == 0x38 {
+        } else if (w0 >> 26) == 0x38 || (w0 >> 26) == 0x3A {
+            // MUBUF (0x38) / MTBUF (0x3A) buffer & vertex fetches
+            len_words = 2;
+            let off12 = w0 & 0xFFF;
+            let vaddr = w1 & 0xFF;
+            let vdata = (w1 >> 8) & 0xFF;
+            hlsl_stmt = format!("v[{vdata}] = g_cbuf.Load((v[{vaddr}] + {off12}u) & 0xFFFCu);");
+            format!("buf_load v{vdata}, v{vaddr}, off={off12}")
+        } else if (w0 >> 26) == 0x34 || (w0 >> 26) == 0x37 {
             len_words = 2;
             hlsl_stmt = format!("/* mem_0x{:02x} */", w0 >> 26);
             format!("mem_0x{:02x}", w0 >> 26)
@@ -504,6 +520,24 @@ pub fn detect_stage(ops: &[DecodedOp], hint: ShaderStage) -> ShaderStage {
         return ShaderStage::Mesh;
     }
     hint
+}
+
+/// Scans a binary blob for embedded `FSSM` shader containers and returns their code slices.
+pub fn extract_fssm_shaders(blob: &[u8]) -> Vec<&[u8]> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 16 <= blob.len() {
+        if &blob[i..i + 4] == b"FSSM" {
+            let sz = u32::from_le_bytes([blob[i + 4], blob[i + 5], blob[i + 6], blob[i + 7]]) as usize;
+            if sz >= 16 && i + sz <= blob.len() {
+                out.push(&blob[i + 16..i + sz]);
+                i += sz;
+                continue;
+            }
+        }
+        i += 4;
+    }
+    out
 }
 
 /// Lifts an RDNA2 instruction stream into per-instruction compilable HLSL.
@@ -696,5 +730,32 @@ mod tests {
         assert!(hlsl.contains("switch (_pc)"));
         assert!(hlsl.contains("(scc == 0u)"));
         assert!(hlsl.contains("// s_code_end"));
+    }
+
+    #[test]
+    fn decodes_mubuf_compressed_exp_and_fssm_containers() {
+        let mut code = Vec::new();
+        // MUBUF (0x38) offset=16, vaddr=1, vdata=2
+        code.extend_from_slice(&((0x38u32 << 26) | 16u32).to_le_bytes());
+        code.extend_from_slice(&((2u32 << 8) | 1u32).to_le_bytes());
+        // EXP target=0 (MRT0), compr=1 (bit 10), vs=[2, 3, 0, 0]
+        code.extend_from_slice(&((0x3Eu32 << 26) | (1u32 << 10) | 0xFu32).to_le_bytes());
+        code.extend_from_slice(&((3u32 << 8) | 2u32).to_le_bytes());
+        code.extend_from_slice(&0xBF81_0000u32.to_le_bytes());
+
+        let (stage, hlsl, count) = lift_to_hlsl(&code, ShaderStage::Pixel);
+        assert_eq!(stage, ShaderStage::Pixel);
+        assert_eq!(count, 3);
+        assert!(hlsl.contains("g_cbuf.Load((v[1] + 16u) & 0xFFFCu)"));
+        assert!(hlsl.contains("f16tof32(v[2] & 0xFFFFu)"));
+
+        let mut fssm = Vec::new();
+        fssm.extend_from_slice(b"FSSM");
+        fssm.extend_from_slice(&((16 + code.len()) as u32).to_le_bytes());
+        fssm.extend_from_slice(&[0u8; 8]);
+        fssm.extend_from_slice(&code);
+        let chunks = extract_fssm_shaders(&fssm);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], code.as_slice());
     }
 }
