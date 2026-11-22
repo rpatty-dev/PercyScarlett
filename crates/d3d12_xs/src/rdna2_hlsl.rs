@@ -197,7 +197,10 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
             let dst = fmt_sdst(sdst);
             hlsl_stmt = match op {
                 0x03 => format!("{dst} = {a};"), // s_mov_b32
-                0x04 => format!("{dst} = {a}; s[{sdst} + 1] = 0u;"), // s_mov_b64
+                0x04 => {
+                    let dst_hi = fmt_sdst(sdst + 1);
+                    format!("{dst} = {a}; {dst_hi} = 0u;") // s_mov_b64
+                }
                 0x06 => format!("{dst} = ~{a}; scc = ({dst} != 0u) ? 1u : 0u;"), // s_not_b32
                 0x0A => {
                     uses_wave = true;

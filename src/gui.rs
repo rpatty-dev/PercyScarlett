@@ -288,6 +288,33 @@ fn silent_cmd(prog: &str) -> Command {
     Command::new(prog)
 }
 
+fn fetch_latest_release_tag() -> Option<(String, String)> {
+    let curl = if cfg!(windows) { "curl.exe" } else { "curl" };
+    let url = format!("{REPO_RELEASES_URL}/latest");
+    let cur = parse_semver(APP_VERSION)?;
+    let res = silent_cmd(curl)
+        .args([
+            "-fsSIL",
+            "--max-time",
+            "6",
+            "-o",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+            "-w",
+            "%{url_effective}",
+            &url,
+        ])
+        .output()
+        .ok()?;
+    if !res.status.success() {
+        return None;
+    }
+    let eff = String::from_utf8_lossy(&res.stdout).trim().to_string();
+    let (_, tag) = eff.rsplit_once("/tag/")?;
+    let rem = parse_semver(tag)?;
+    let ver = tag.trim_start_matches(['v', 'V']).to_string();
+    (rem > cur).then_some((ver, eff))
+}
+
 fn spawn_update_check(upd: Arc<Mutex<UpdateState>>, ctx: egui::Context) {
     {
         let mut g = upd.lock().unwrap();
@@ -297,28 +324,8 @@ fn spawn_update_check(upd: Arc<Mutex<UpdateState>>, ctx: egui::Context) {
         g.checking = true;
     }
     std::thread::spawn(move || {
-        let curl = if cfg!(windows) { "curl.exe" } else { "curl" };
-        let url = format!("{REPO_RELEASES_URL}/latest");
-        let cur = parse_semver(APP_VERSION);
         loop {
-            let mut found = None;
-            // HEAD (-I) redirect probe: 0-byte body, no GitHub API rate limit
-            if let Ok(res) = silent_cmd(curl)
-                .args(["-fsSIL", "--max-time", "6", "-o", if cfg!(windows) { "NUL" } else { "/dev/null" }, "-w", "%{url_effective}", &url])
-                .output()
-            {
-                if res.status.success() {
-                    let eff = String::from_utf8_lossy(&res.stdout).trim().to_string();
-                    if let Some((_, tag)) = eff.rsplit_once("/tag/") {
-                        if let (Some(rem), Some(c)) = (parse_semver(tag), cur) {
-                            if rem > c {
-                                let ver = tag.trim_start_matches(['v', 'V']).to_string();
-                                found = Some((ver, eff));
-                            }
-                        }
-                    }
-                }
-            }
+            let found = fetch_latest_release_tag();
             let stop = {
                 let mut g = upd.lock().unwrap();
                 g.checking = false;
@@ -774,7 +781,35 @@ impl DashboardApp {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(format!("v{APP_VERSION}")).size(12.0).color(DIM));
+                if ui
+                    .add(egui::Button::new(RichText::new(format!("v{APP_VERSION}")).size(12.0).color(DIM)).frame(false))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("Click to check for updates")
+                    .clicked()
+                {
+                    let upd = Arc::clone(&self.update);
+                    let modal = Arc::clone(&self.action_modal);
+                    let ctx2 = ctx.clone();
+                    *modal.lock().unwrap() = Some(ActionModal {
+                        title: "Checking for Updates".into(),
+                        phase: ActionPhase::Running,
+                        started: std::time::Instant::now(),
+                    });
+                    std::thread::spawn(move || {
+                        let found = fetch_latest_release_tag();
+                        if let Some((ver, url)) = found {
+                            {
+                                let mut g = upd.lock().unwrap();
+                                g.available = Some((ver.clone(), url));
+                                g.show_modal = true;
+                            }
+                            *modal.lock().unwrap() = None;
+                        } else if let Some(m) = modal.lock().unwrap().as_mut() {
+                            m.phase = ActionPhase::Success(format!("Up to date (v{APP_VERSION})"));
+                        }
+                        ctx2.request_repaint();
+                    });
+                }
                 if ui.small_button("Feedback").on_hover_text("Send feedback or bug report to GitHub").clicked() {
                     let t = format!("[Feedback] PercyScarlett v{APP_VERSION}");
                     let b = format!(
