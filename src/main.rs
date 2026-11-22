@@ -110,6 +110,11 @@ fn main() {
             {
                 let exe_path = Path::new(&args[2]);
                 let dry_run = args.iter().any(|a| a == "--dry-run");
+                pe_loader::set_guest_exe_path(exe_path);
+                if let Some(parent) = exe_path.parent() {
+                    let old_path = std::env::var("PATH").unwrap_or_default();
+                    std::env::set_var("PATH", format!("{};{old_path}", parent.display()));
+                }
                 let shim_dir = std::env::current_exe()
                     .ok()
                     .and_then(|p| p.parent().map(|d| d.to_path_buf()))

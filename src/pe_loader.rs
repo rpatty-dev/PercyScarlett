@@ -11,6 +11,76 @@ extern "system" {
     fn RtlAddFunctionTable(function_table: *const c_void, entry_count: u32, base_address: u64) -> u8;
     fn RtlPcToFileHeader(pc_value: *const c_void, base_of_image: *mut *mut c_void) -> *mut c_void;
     fn AddVectoredExceptionHandler(first: u32, handler: unsafe extern "system" fn(*const c_void) -> i32) -> *mut c_void;
+    fn GetModuleFileNameW(module: usize, buf: *mut u16, size: u32) -> u32;
+    fn GetModuleFileNameA(module: usize, buf: *mut u8, size: u32) -> u32;
+    fn GetModuleHandleW(name: *const u16) -> usize;
+    fn GetModuleHandleA(name: *const u8) -> usize;
+}
+
+static GUEST_EXE_PATH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static GUEST_IMAGE_BASE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn set_guest_exe_path(path: &Path) {
+    if let Ok(mut g) = GUEST_EXE_PATH.lock() {
+        *g = Some(path.to_string_lossy().into_owned());
+    }
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn percy_get_module_handle_w(name: *const u16) -> usize {
+    if name.is_null() {
+        let b = GUEST_IMAGE_BASE.load(std::sync::atomic::Ordering::Acquire);
+        if b != 0 {
+            return b;
+        }
+    }
+    GetModuleHandleW(name)
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn percy_get_module_handle_a(name: *const u8) -> usize {
+    if name.is_null() {
+        let b = GUEST_IMAGE_BASE.load(std::sync::atomic::Ordering::Acquire);
+        if b != 0 {
+            return b;
+        }
+    }
+    GetModuleHandleA(name)
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn percy_get_module_file_name_w(module: usize, buf: *mut u16, size: u32) -> u32 {
+    let gbase = GUEST_IMAGE_BASE.load(std::sync::atomic::Ordering::Acquire);
+    if (module == 0 || module == gbase) && !buf.is_null() && size > 0 {
+        if let Ok(g) = GUEST_EXE_PATH.lock() {
+            if let Some(ref p) = *g {
+                let mut w: Vec<u16> = p.encode_utf16().collect();
+                let cap = (size as usize).saturating_sub(1);
+                w.truncate(cap);
+                std::ptr::copy_nonoverlapping(w.as_ptr(), buf, w.len());
+                *buf.add(w.len()) = 0;
+                return w.len() as u32;
+            }
+        }
+    }
+    GetModuleFileNameW(module, buf, size)
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn percy_get_module_file_name_a(module: usize, buf: *mut u8, size: u32) -> u32 {
+    let gbase = GUEST_IMAGE_BASE.load(std::sync::atomic::Ordering::Acquire);
+    if (module == 0 || module == gbase) && !buf.is_null() && size > 0 {
+        if let Ok(g) = GUEST_EXE_PATH.lock() {
+            if let Some(ref p) = *g {
+                let bytes = p.as_bytes();
+                let n = bytes.len().min((size as usize).saturating_sub(1));
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n);
+                *buf.add(n) = 0;
+                return n as u32;
+            }
+        }
+    }
+    GetModuleFileNameA(module, buf, size)
 }
 
 #[cfg(windows)]
@@ -274,11 +344,14 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
                             let fn_name_ptr = base_u8.add(hint_rva + 2) as *const i8;
                             if hmod != 0 {
                                 let name_str = read_cstr_mem(fn_name_ptr as *const u8);
-                                if name_str == "RtlPcToFileHeader" {
-                                    addr = percy_rtl_pc_to_file_header as *const () as usize;
-                                } else {
-                                    addr = GetProcAddress(hmod, fn_name_ptr);
-                                }
+                                addr = match name_str.as_str() {
+                                    "RtlPcToFileHeader" => percy_rtl_pc_to_file_header as *const () as usize,
+                                    "GetModuleFileNameW" => percy_get_module_file_name_w as *const () as usize,
+                                    "GetModuleFileNameA" => percy_get_module_file_name_a as *const () as usize,
+                                    "GetModuleHandleW" => percy_get_module_handle_w as *const () as usize,
+                                    "GetModuleHandleA" => percy_get_module_handle_a as *const () as usize,
+                                    _ => GetProcAddress(hmod, fn_name_ptr),
+                                };
                                 if addr == 0 {
                                     sym_label = format!("{dll_name}!{name_str}");
                                 }
@@ -406,6 +479,7 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
         }
 
         let entry_va = (base as u64).wrapping_add(entry_rva as u64);
+        GUEST_IMAGE_BASE.store(base as usize, std::sync::atomic::Ordering::Release);
         if execute_entry && std::env::var("PERCY_TRACE").is_ok() {
             AddVectoredExceptionHandler(1, trace_veh);
         }
