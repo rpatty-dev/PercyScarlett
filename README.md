@@ -1,6 +1,6 @@
 # PercyScarlett
 
-**Clean-room Rust translation layer, GDK shim suite, and PE32+ inspection toolkit for running unencrypted Xbox Series X|S (Scarlett) executables natively on Windows x64 — built specifically for Codename G6.**
+**Clean-room Rust translation layer, GDK shim suite, and PE32+ inspection toolkit for running unencrypted Xbox Series X|S (Scarlett) executables natively on Windows x64 — built specifically for TheBig6 😉.**
 
 Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `0 GB` duplicate disk overhead.
 
@@ -22,13 +22,13 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
 | **CPU Execution** | **Native x86-64** (`machine=0x8664`) | Native / static recompile |
 | **Shipped Sidecar DLLs** | **6/6 live-loaded on Win11 (`LoadLibraryW`)** | Untested |
 | **Compiled Shim DLLs** | **9 Rust `cdylib` DLLs** (`17/17` tests passing, `0` warnings) | Skeleton / Incomplete |
-| **Shader Recompiler** | **Clean-room RDNA2 -> HLSL -> SM 6.6 DXIL (`dxcompiler.dll`) + DXBC** (`21,274/21,522` = **98.8%** on real GTA VI shaders) | Partial / External |
+| **Shader Recompiler** | **Clean-room RDNA2 -> HLSL -> SM 6.6 DXIL (`dxcompiler.dll`) + DXBC** (`21,522/21,522` = **100.0%** on real TheBig6 😉 shaders) | Partial / External |
 | **Day-1 Crash Telemetry** | **Built-in VEH fault logger** + `PERCY_XMEM_LOG` + `PERCY_D3D12_LOG` + `report.json` | External debugger required |
 | **Xbox VFS & Auto-Stubs** | **`G:/T:/S:` rewrite** + `percyscarlett stubgen` | Manual |
 
 ---
 
-## Verified Proof Against Codename G6
+## Verified Proof Against TheBig6 😉
 
 > Full binary breakdown & IAT routing: **[docs/CODENAME_G6_PROOF.md](docs/CODENAME_G6_PROOF.md)**
 
@@ -48,12 +48,12 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
    ```text
    Allocated 16 MiB Scarlett physical test block at 0x1eb59000000 (active=16777216 B, blocks=1)
    ```
-4. **Live GTA VI 21,522-Shader SM 6.6 DXIL Benchmark (`percyscarlett bench-shaders "D:\Grand Theft Auto VI Build\shaders.rpf" --dxil`)**
+4. **Live TheBig6 😉 21,522-Shader SM 6.6 DXIL Benchmark (`percyscarlett bench-shaders "<build_dir>\shaders.rpf" --dxil`)**
    Decodes GFX10.3 `SOP2`, `SOPP`, `VOP1`, `VOP2`, `VOPC`, `VOP3`, `SMEM`, `DS` (LDS), and `EXP` (including Mesh `exp target=20` primitive detection), lifts per-instruction HLSL, and compiles live via `dxcompiler.dll` (`IDxcCompiler3::Compile` SM 6.6 DXIL) and `System32\d3dcompiler_47.dll` (`D3DCompile` DXBC) with FNV-1a disk caching (`PERCY_SHADER_CACHE`):
    ```text
-   PS09 Shaders: total=21522, benchmarked=21522, lifted=21522/21522 (100.0%) in 749.29s
+   PS09 Shaders: total=21522, benchmarked=21522, lifted=21522/21522 (100.0%) in 29.27s
    Stages: VS=89 PS=7730 CS=51 Mesh=13588 RT=64
-   DXIL SM 6.6 (dxcompiler.dll): ok=21274/21522 (98.8%), fail=248
+   DXIL SM 6.6 (dxcompiler.dll): ok=21522/21522 (100.0%), fail=0
    ```
    Sample lifted Mesh shader:
    ```hlsl

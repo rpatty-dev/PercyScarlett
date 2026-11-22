@@ -1,12 +1,12 @@
-# Codename G6 — Technical Proof & Bring-Up Architecture
+# TheBig6 😉 — Technical Proof & Bring-Up Architecture
 
-This document records empirical verification from PercyScarlett's PE32+ scanner and runtime probes against an unencrypted **Codename G6** Xbox Series X|S (Scarlett) GDK build, demonstrating why the build can execute natively on Windows x64 once the missing main executable is paired with PercyScarlett's GDK shim DLLs.
+This document records empirical verification from PercyScarlett's PE32+ scanner and runtime probes against an unencrypted **TheBig6 😉** Xbox Series X|S (Scarlett) GDK build, demonstrating why the build can execute natively on Windows x64 once the missing main executable is paired with PercyScarlett's GDK shim DLLs.
 
 ---
 
 ## 1. Proof of Native x86-64 PE32+ Compatibility
 
-Scanning the 16 shipped DLLs and `MicrosoftGame.Config` in the Codename G6 build with `percyscarlett plan` confirms:
+Scanning the 16 shipped DLLs and `MicrosoftGame.Config` in the TheBig6 😉 build with `percyscarlett plan` confirms:
 
 1. **Standard Windows PE32+ Format (`0x8664`):**
    Every binary uses standard `PE32+` (`machine = 0x8664`, `base = 0x180000000`) with normal `.text`, `.rdata`, `.data`, `.pdata`, `.reloc` sections (plus the `.xbld` marker on Xbox-built modules). **No CPU instruction translation or hypervisor is required** — Windows x64 executes the `.text` code natively.
@@ -30,7 +30,7 @@ Scanning the 16 shipped DLLs and `MicrosoftGame.Config` in the Codename G6 build
 ## 2. Verified Runtime Primitives & Live DLL Loading (Windows 11 x64)
 
 - **Live Windows `LoadLibraryW` Verification (`percyscarlett verify-dlls`):**
-  All 6 shipped non-CRT Xbox/Scarlett sidecar DLLs in the Codename G6 build load cleanly on Windows 11 x64 using PercyScarlett's compiled `xmem.dll` and `d3d12_xs.dll` shims + host `System32`:
+  All 6 shipped non-CRT Xbox/Scarlett sidecar DLLs in the TheBig6 😉 build load cleanly on Windows 11 x64 using PercyScarlett's compiled `xmem.dll` and `d3d12_xs.dll` shims + host `System32`:
   ```text
   [PASS] amd_fidelityfx_loader_xbox.dll loaded at 0x7ffbfa7b0000
   [PASS] amd_fidelityfx_upscaler_xbox.dll loaded at 0x7ffb89170000
@@ -49,10 +49,10 @@ Scanning the 16 shipped DLLs and `MicrosoftGame.Config` in the Codename G6 build
 
 ---
 
-## 3. How Codename G6 Boots When the `.exe` Drops
+## 3. How TheBig6 😉 Boots When the `.exe` Drops
 
 ```
-  Codename G6 (.exe + 16 DLLs + MicrosoftGame.Config)
+  TheBig6 😉 (.exe + 16 DLLs + MicrosoftGame.Config)
         │
         ├──► Standard Win32 / API Sets / WINHTTP / CRYPT32 ──► Host Windows 10/11 x64
         ├──► MSVC 140 Runtime DLLs                         ──► Packaged / Host CRT
@@ -67,7 +67,7 @@ Scanning the 16 shipped DLLs and `MicrosoftGame.Config` in the Codename G6 build
 ```
 
 ### Day-1 Bring-Up Sequence
-1. Place the unencrypted Codename G6 `.exe` into the source build directory and run the non-destructive overlay mount (junctions for asset folders, hardlinks for root binaries).
-2. Run `percyscarlett inspect <MountDir>\<CodenameG6.exe>` to enumerate every exact GDK import ordinal and function name required by the executable (including extended console audio/OS DLLs such as `chad.dll`, `xapu.dll`, `AcpHal.dll`, and `xcrdapi.dll`).
+1. Place the unencrypted TheBig6 😉 `.exe` into the source build directory and run the non-destructive overlay mount (junctions for asset folders, hardlinks for root binaries).
+2. Run `percyscarlett inspect <MountDir>\<TheBig6.exe>` to enumerate every exact GDK import ordinal and function name required by the executable (including extended console audio/OS DLLs such as `chad.dll`, `xapu.dll`, `AcpHal.dll`, and `xcrdapi.dll`).
 3. Drop the compiled PercyScarlett shim DLLs (`xmem.dll`, `d3d12_xs.dll`, `xgameruntime.dll`, `winrt_xs.dll`, `dstorage.dll`, `GameInput.dll`) into the mount directory so the Windows PE loader binds the `.exe` IAT directly to PercyScarlett without touching the original build files.
 4. For graphics bring-up beyond initial device creation, prioritize `ID3D12DeviceX` / `PresentX`, RDNA2 Mesh/Amplification shader translation, and external root signature binding.
