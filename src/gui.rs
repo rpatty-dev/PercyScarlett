@@ -280,30 +280,44 @@ fn spawn_update_check(upd: Arc<Mutex<UpdateState>>, ctx: egui::Context) {
         g.checking = true;
     }
     std::thread::spawn(move || {
-        let (curl, null) = if cfg!(windows) { ("curl.exe", "NUL") } else { ("curl", "/dev/null") };
-        let out = silent_cmd(curl)
-            .args(["-fsSL", "-o", null, "-w", "%{url_effective}", &format!("{REPO_RELEASES_URL}/latest")])
-            .output();
-        let mut found = None;
-        if let Ok(res) = out {
-            if res.status.success() {
-                let eff = String::from_utf8_lossy(&res.stdout).trim().to_string();
-                if let Some((_, tag)) = eff.rsplit_once("/tag/") {
-                    if let (Some(rem), Some(cur)) = (parse_semver(tag), parse_semver(APP_VERSION)) {
-                        if rem > cur {
-                            let ver = tag.trim_start_matches(['v', 'V']).to_string();
-                            found = Some((ver, eff));
+        let curl = if cfg!(windows) { "curl.exe" } else { "curl" };
+        let url = format!("{REPO_RELEASES_URL}/latest");
+        let cur = parse_semver(APP_VERSION);
+        loop {
+            let mut found = None;
+            // HEAD (-I) redirect probe: 0-byte body, no GitHub API rate limit
+            if let Ok(res) = silent_cmd(curl)
+                .args(["-fsSIL", "--max-time", "6", "-o", if cfg!(windows) { "NUL" } else { "/dev/null" }, "-w", "%{url_effective}", &url])
+                .output()
+            {
+                if res.status.success() {
+                    let eff = String::from_utf8_lossy(&res.stdout).trim().to_string();
+                    if let Some((_, tag)) = eff.rsplit_once("/tag/") {
+                        if let (Some(rem), Some(c)) = (parse_semver(tag), cur) {
+                            if rem > c {
+                                let ver = tag.trim_start_matches(['v', 'V']).to_string();
+                                found = Some((ver, eff));
+                            }
                         }
                     }
                 }
             }
+            let stop = {
+                let mut g = upd.lock().unwrap();
+                g.checking = false;
+                if found.is_some() {
+                    g.available = found;
+                    ctx.request_repaint();
+                    true
+                } else {
+                    g.installing
+                }
+            };
+            if stop {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(15));
         }
-        {
-            let mut g = upd.lock().unwrap();
-            g.checking = false;
-            g.available = found;
-        }
-        ctx.request_repaint();
     });
 }
 
