@@ -59,6 +59,10 @@ pub struct DecodedOp {
     pub is_export_prim: bool,
     pub uses_lds: bool,
     pub uses_wave: bool,
+    /// Relative branch target byte offset (for SOPP branch ops), if any.
+    pub branch_target: Option<usize>,
+    /// Condition expression in HLSL (`None` = unconditional branch).
+    pub branch_cond: Option<&'static str>,
 }
 
 fn fmt_src(src: u32, lit: Option<u32>, as_float: bool) -> String {
@@ -139,12 +143,15 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
         let mut is_export_prim = false;
         let mut uses_lds = false;
         let mut uses_wave = false;
+        let mut branch_target: Option<usize> = None;
+        let mut branch_cond: Option<&'static str> = None;
         let mut hlsl_stmt = String::new();
 
-        let mnemonic = if (w0 & 0xFFFF_0000) == 0xBF81_0000 {
+        let mnemonic = if (w0 & 0xFFFF_0000) == 0xBF81_0000 || (w0 & 0xFFFF_0000) == 0xBF9F_0000 {
             is_endpgm = true;
-            hlsl_stmt = "// s_endpgm".into();
-            "s_endpgm".to_string()
+            let tag = if (w0 & 0xFFFF_0000) == 0xBF9F_0000 { "s_code_end" } else { "s_endpgm" };
+            hlsl_stmt = format!("// {tag}");
+            tag.to_string()
         } else if (w0 & 0xFF80_0000) == 0xBF80_0000 {
             let op = (w0 >> 16) & 0x7F;
             let imm = (w0 & 0xFFFF) as i16;
@@ -154,7 +161,19 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                     "s_nop".into()
                 }
                 0x02..=0x09 => {
-                    hlsl_stmt = format!("/* branch op=0x{op:02x} rel={imm} */");
+                    let target = (off as isize + 4 + (imm as isize) * 4).max(0) as usize;
+                    branch_target = Some(target);
+                    branch_cond = match op {
+                        0x02 => None,
+                        0x04 => Some("(scc == 0u)"),
+                        0x05 => Some("(scc != 0u)"),
+                        0x06 => Some("(vcc == 0u)"),
+                        0x07 => Some("(vcc != 0u)"),
+                        0x08 => Some("((exec_lo | exec_hi) == 0u)"),
+                        0x09 => Some("((exec_lo | exec_hi) != 0u)"),
+                        _ => None,
+                    };
+                    hlsl_stmt = format!("/* branch op=0x{op:02x} -> @L_{target} */");
                     format!("s_branch_0x{op:02x} {imm}")
                 }
                 0x0C => {
@@ -163,6 +182,40 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                 }
                 _ => format!("sopp_0x{op:02x} {imm}"),
             }
+        } else if (w0 >> 23) == 0x17D {
+            // SOP1
+            let op = (w0 >> 8) & 0xFF;
+            let ssrc0 = w0 & 0xFF;
+            let sdst = (w0 >> 16) & 0x7F;
+            let lit = if ssrc0 == 255 {
+                len_words = 2;
+                Some(w1)
+            } else {
+                None
+            };
+            let a = fmt_src(ssrc0, lit, false);
+            let dst = fmt_sdst(sdst);
+            hlsl_stmt = match op {
+                0x03 => format!("{dst} = {a};"), // s_mov_b32
+                0x04 => format!("{dst} = {a}; s[{sdst} + 1] = 0u;"), // s_mov_b64
+                0x06 => format!("{dst} = ~{a}; scc = ({dst} != 0u) ? 1u : 0u;"), // s_not_b32
+                0x0A => {
+                    uses_wave = true;
+                    format!("{dst} = countbits({a}); scc = ({dst} != 0u) ? 1u : 0u;") // s_bcnt1_i32_b32
+                }
+                0x0B => {
+                    uses_wave = true;
+                    format!("{dst} = countbits(exec_lo) + countbits(exec_hi); scc = ({dst} != 0u) ? 1u : 0u;") // s_bcnt1_i32_b64
+                }
+                0x0F => format!("{dst} = firstbitlow({a});"), // s_ff1_i32_b32
+                0x13 => format!("{dst} = firstbithigh({a});"), // s_flbit_i32_b32
+                0x24 => {
+                    uses_wave = true;
+                    format!("{dst} = exec_lo; exec_lo &= {a}; scc = (exec_lo != 0u) ? 1u : 0u;") // s_and_saveexec_b64
+                }
+                _ => format!("{dst} = {a}; /* sop1_0x{op:02x} */"),
+            };
+            format!("sop1_0x{op:02x} s{sdst}, s{ssrc0}")
         } else if (w0 >> 26) == 0x3E {
             // EXP (64-bit)
             len_words = 2;
@@ -267,6 +320,20 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                     uses_wave = true;
                     hlsl_stmt = format!("v[{vdst}] = WaveReadLaneFirst({});", fmt_src(s0, None, false));
                     format!("v_wave_0x{op:03x} v{vdst}")
+                }
+                0x160 | 0x360 => {
+                    uses_wave = true;
+                    hlsl_stmt = format!(
+                        "v[{vdst}] = WaveReadLaneAt({}, {});",
+                        fmt_src(s0, None, false),
+                        fmt_src(s1, None, false)
+                    );
+                    format!("v_readlane_b32 v{vdst}")
+                }
+                0x364 | 0x365 => {
+                    uses_wave = true;
+                    hlsl_stmt = format!("v[{vdst}] = WaveGetLaneIndex();");
+                    format!("v_mbcnt_u32 v{vdst}")
                 }
                 _ => {
                     hlsl_stmt = format!("v[{vdst}] = {}; /* vop3_0x{op:03x} */", fmt_src(s0, None, false));
@@ -421,6 +488,8 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
             is_export_prim,
             uses_lds,
             uses_wave,
+            branch_target,
+            branch_cond,
         });
         off += len_words * 4;
         if is_endpgm {
@@ -466,22 +535,52 @@ pub fn lift_to_hlsl(bytes: &[u8], hint: ShaderStage) -> (ShaderStage, String, us
     hlsl.push('\n');
 
     let mut body = String::with_capacity(1024 + insn_count * 40);
-    body.push_str("    uint s[106]; uint v[256]; uint vcc = 0u; uint exec_lo = 0xFFFFFFFFu; uint exec_hi = 0u; uint _s_sink = 0u;\n");
+    body.push_str("    uint s[106]; uint v[256]; uint vcc = 0u; uint scc = 0u; uint exec_lo = 0xFFFFFFFFu; uint exec_hi = 0u; uint _s_sink = 0u;\n");
     body.push_str("    [unroll] for (uint _i = 0u; _i < 16u; ++_i) { s[_i] = 0u; }\n");
     body.push_str("    [unroll] for (uint _j = 0u; _j < 32u; ++_j) { v[_j] = 0u; }\n");
     body.push_str("    float4 exp_pos0 = float4(0.0, 0.0, 0.0, 1.0);\n");
     body.push_str("    float4 exp_mrt[8] = { float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1) };\n");
     body.push_str("    float4 exp_param[32]; [unroll] for (uint _p = 0u; _p < 32u; ++_p) { exp_param[_p] = float4(0,0,0,0); }\n");
 
-    for op in &ops {
-        if op.uses_lds && !uses_lds {
-            continue;
-        }
-        if !op.hlsl_stmt.is_empty() {
-            for line in op.hlsl_stmt.lines() {
-                let _ = writeln!(body, "    {line}");
+    let has_branches = ops.iter().any(|o| o.branch_target.is_some());
+    if !has_branches {
+        for op in &ops {
+            if op.uses_lds && !uses_lds {
+                continue;
+            }
+            if !op.hlsl_stmt.is_empty() {
+                for line in op.hlsl_stmt.lines() {
+                    let _ = writeln!(body, "    {line}");
+                }
             }
         }
+    } else {
+        // Structured CFG state-machine for real RDNA2 loops & conditional branches (bounded for DXC safety)
+        body.push_str("    uint _pc = 0u; uint _iters = 0u;\n");
+        body.push_str("    while (_pc != 0xFFFFFFFFu && _iters < 256u) {\n        _iters++;\n        switch (_pc) {\n");
+        for (idx, op) in ops.iter().enumerate() {
+            let _ = writeln!(body, "        case {}u: {{", op.offset);
+            if !(op.uses_lds && !uses_lds) && !op.hlsl_stmt.is_empty() {
+                for line in op.hlsl_stmt.lines() {
+                    let _ = writeln!(body, "            {line}");
+                }
+            }
+            let next_pc = ops.get(idx + 1).map(|n| n.offset as u32).unwrap_or(0xFFFFFFFFu32);
+            if op.is_endpgm {
+                body.push_str("            _pc = 0xFFFFFFFFu; break;\n");
+            } else if let Some(tgt) = op.branch_target {
+                let valid_tgt = if ops.iter().any(|o| o.offset == tgt) { tgt as u32 } else { next_pc };
+                if let Some(cond) = op.branch_cond {
+                    let _ = writeln!(body, "            _pc = {cond} ? {valid_tgt}u : {next_pc}u; break;");
+                } else {
+                    let _ = writeln!(body, "            _pc = {valid_tgt}u; break;");
+                }
+            } else {
+                let _ = writeln!(body, "            _pc = {next_pc}u; break;");
+            }
+            body.push_str("        }\n");
+        }
+        body.push_str("        default: _pc = 0xFFFFFFFFu; break;\n        }\n    }\n");
     }
 
     match stage {
@@ -576,5 +675,26 @@ mod tests {
         assert!(hlsl.contains("v[1] = 0x3F800000u;"));
         assert!(hlsl.contains("asfloat(v[1]) + asfloat(v[0])"));
         assert!(hlsl.contains("[outputtopology(\"triangle\")]"));
+    }
+
+    #[test]
+    fn decodes_sopp_branches_and_wave64_intrinsics() {
+        let mut code = Vec::new();
+        // s_bcnt1_i32_b64 s0, exec -> SOP1 op=0x0B, sdst=0, ssrc0=126
+        code.extend_from_slice(&((0x17Du32 << 23) | (0x0Bu32 << 8) | 126u32).to_le_bytes());
+        // s_cbranch_scc0 +1 (skip next insn) -> SOPP op=0x04, imm=1
+        code.extend_from_slice(&(0xBF80_0000u32 | (0x04u32 << 16) | 1u32).to_le_bytes());
+        // v_mov_b32 v3, 0
+        code.extend_from_slice(&((0x3Fu32 << 25) | (3u32 << 17) | (0x01u32 << 9) | 128u32).to_le_bytes());
+        // s_code_end (0xBF9F0000)
+        code.extend_from_slice(&0xBF9F_0000u32.to_le_bytes());
+
+        let (stage, hlsl, count) = lift_to_hlsl(&code, ShaderStage::Compute);
+        assert_eq!(stage, ShaderStage::Compute);
+        assert_eq!(count, 4);
+        assert!(hlsl.contains("countbits(exec_lo) + countbits(exec_hi)"));
+        assert!(hlsl.contains("switch (_pc)"));
+        assert!(hlsl.contains("(scc == 0u)"));
+        assert!(hlsl.contains("// s_code_end"));
     }
 }

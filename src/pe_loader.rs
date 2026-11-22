@@ -45,9 +45,11 @@ pub struct LoadedImageStats {
     pub entry_va: u64,
     pub pdata_entries: u32,
     pub tls_callbacks: usize,
+    pub static_tls_bytes: usize,
     pub resolved_imports: usize,
     pub stubbed_imports: usize,
     pub relocations_applied: usize,
+    pub missing_imports: Vec<String>,
 }
 
 #[cfg(windows)]
@@ -185,6 +187,7 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
         let mut dll_cache: HashMap<String, usize> = HashMap::new();
         let mut resolved_imports = 0usize;
         let mut stubbed_imports = 0usize;
+        let mut missing_imports: Vec<String> = Vec::new();
         let (imp_rva, _) = dd(1);
         if imp_rva != 0 {
             let mut desc_off = imp_rva as usize;
@@ -206,15 +209,25 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
                         break;
                     }
                     let mut addr = 0usize;
-                    if hmod != 0 {
-                        if (thunk & (1u64 << 63)) != 0 {
-                            let ord = (thunk & 0xFFFF) as usize;
+                    let mut sym_label = String::new();
+                    if (thunk & (1u64 << 63)) != 0 {
+                        let ord = (thunk & 0xFFFF) as usize;
+                        if hmod != 0 {
                             addr = GetProcAddress(hmod, ord as *const i8);
-                        } else {
-                            let hint_rva = (thunk & 0x7FFF_FFFF) as usize;
-                            if hint_rva + 2 < size_of_image {
-                                let fn_name_ptr = base_u8.add(hint_rva + 2) as *const i8;
+                        }
+                        if addr == 0 {
+                            sym_label = format!("{dll_name}!#{ord}");
+                        }
+                    } else {
+                        let hint_rva = (thunk & 0x7FFF_FFFF) as usize;
+                        if hint_rva + 2 < size_of_image {
+                            let fn_name_ptr = base_u8.add(hint_rva + 2) as *const i8;
+                            if hmod != 0 {
                                 addr = GetProcAddress(hmod, fn_name_ptr);
+                            }
+                            if addr == 0 {
+                                let s = read_cstr_mem(fn_name_ptr as *const u8);
+                                sym_label = format!("{dll_name}!{s}");
                             }
                         }
                     }
@@ -223,6 +236,9 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
                     } else {
                         addr = unresolved_xbox_stub as *const () as usize;
                         stubbed_imports += 1;
+                        if !sym_label.is_empty() && !missing_imports.contains(&sym_label) {
+                            missing_imports.push(sym_label);
+                        }
                     }
                     *(base_u8.add(iat_rva + idx * 8) as *mut usize) = addr;
                     idx += 1;
@@ -248,26 +264,74 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
             VirtualProtect(base_u8.add(vaddr) as *mut c_void, vsize, prot, &mut old);
         }
 
-        // Register .pdata SEH table (directory index 3)
+        // Register sanitized .pdata SEH table (directory index 3)
         let (pdata_rva, pdata_sz) = dd(3);
         let pdata_entries = if pdata_rva != 0 && pdata_sz >= 12 {
-            let count = pdata_sz / 12;
-            let _ = RtlAddFunctionTable(
-                base_u8.add(pdata_rva as usize) as *const c_void,
-                count,
-                base as u64,
-            );
+            let raw_count = (pdata_sz / 12) as usize;
+            let raw_ptr = base_u8.add(pdata_rva as usize) as *const [u32; 3];
+            let mut valid: Vec<[u32; 3]> = (0..raw_count)
+                .map(|i| *raw_ptr.add(i))
+                .filter(|&[begin, end, _]| begin < end && (end as usize) <= size_of_image)
+                .collect();
+            valid.sort_unstable_by_key(|e| e[0]);
+            let count = valid.len() as u32;
+            if count > 0 {
+                // Keep sanitized table alive in mapped image when possible, else leak boxed slice for process lifetime
+                let tbl = valid.into_boxed_slice();
+                let ptr = Box::into_raw(tbl) as *const c_void;
+                let _ = RtlAddFunctionTable(ptr, count, base as u64);
+            }
             count
         } else {
             0
         };
 
-        // Run TLS callbacks (directory index 9)
+        // Initialize static .tls block + TEB gs:[0x58] slot & run TLS callbacks (directory index 9)
         let mut tls_callbacks = 0usize;
+        let mut static_tls_bytes = 0usize;
+        let mut saved_teb_tls: Option<*mut *mut u8> = None;
         let (tls_rva, tls_sz) = dd(9);
-        if tls_rva != 0 && tls_sz >= 24 {
-            // IMAGE_TLS_DIRECTORY64: +24 AddressOfCallBacks (VA)
-            let cb_va = *(base_u8.add(tls_rva as usize + 24) as *const u64);
+        if tls_rva != 0 && tls_sz >= 40 {
+            let tls_dir = base_u8.add(tls_rva as usize) as *const u64;
+            let raw_start = *tls_dir.add(0);
+            let raw_end = *tls_dir.add(1);
+            let addr_of_index = *tls_dir.add(2);
+            let cb_va = *tls_dir.add(3);
+            let zero_fill = (*((tls_dir.add(4)) as *const u32)) as usize;
+            let raw_len = raw_end.saturating_sub(raw_start) as usize;
+            let total_tls = raw_len + zero_fill;
+            if total_tls > 0 && total_tls <= 16 * 1024 * 1024 {
+                static NEXT_TLS_SLOT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(16);
+                let slot = NEXT_TLS_SLOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if (slot as usize) < 64 {
+                    if addr_of_index != 0 {
+                        *(addr_of_index as *mut u32) = slot;
+                    }
+                    let block = VirtualAlloc(0, total_tls, 0x3000, 0x04) as *mut u8;
+                    if !block.is_null() {
+                        if raw_len > 0 && raw_start != 0 {
+                            std::ptr::copy_nonoverlapping(raw_start as *const u8, block, raw_len);
+                        }
+                        #[cfg(target_arch = "x86_64")]
+                        {
+                            let mut teb_tls: *mut *mut u8;
+                            std::arch::asm!("mov {}, gs:[0x58]", out(reg) teb_tls);
+                            saved_teb_tls = Some(teb_tls);
+                            let new_tbl = VirtualAlloc(0, 64 * 8, 0x3000, 0x04) as *mut *mut u8;
+                            if !new_tbl.is_null() {
+                                if !teb_tls.is_null() {
+                                    let page_rem = (0x1000 - (teb_tls as usize & 0xFFF)) / 8;
+                                    let copy_slots = page_rem.min(16).max(1);
+                                    std::ptr::copy_nonoverlapping(teb_tls, new_tbl, copy_slots);
+                                }
+                                *new_tbl.add(slot as usize) = block;
+                                std::arch::asm!("mov gs:[0x58], {}", in(reg) new_tbl);
+                            }
+                        }
+                        static_tls_bytes = total_tls;
+                    }
+                }
+            }
             if cb_va != 0 {
                 let mut cb_ptr = cb_va as *const u64;
                 while *cb_ptr != 0 && tls_callbacks < 64 {
@@ -287,6 +351,10 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
         } else {
             0
         };
+        #[cfg(target_arch = "x86_64")]
+        if let Some(orig) = saved_teb_tls {
+            std::arch::asm!("mov gs:[0x58], {}", in(reg) orig);
+        }
 
         Ok((
             LoadedImageStats {
@@ -294,9 +362,11 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
                 entry_va,
                 pdata_entries,
                 tls_callbacks,
+                static_tls_bytes,
                 resolved_imports,
                 stubbed_imports,
                 relocations_applied,
+                missing_imports,
             },
             rc,
         ))
@@ -366,5 +436,72 @@ mod tests {
         let (stats, rc) = load_and_run_pe64(&pe, Path::new("."), true).expect("in-process PE64 run");
         assert_eq!(rc, 42);
         assert_eq!(stats.pdata_entries, 1);
+        assert!(stats.missing_imports.is_empty());
+    }
+
+    #[test]
+    fn maps_static_tls_and_sanitizes_pdata() {
+        let mut pe = vec![0u8; 0x3000];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+        pe[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());
+        pe[0x94..0x96].copy_from_slice(&0xF0u16.to_le_bytes());
+        pe[0x98..0x9A].copy_from_slice(&0x020Bu16.to_le_bytes());
+        pe[0xA8..0xAC].copy_from_slice(&0x1000u32.to_le_bytes()); // entry RVA
+        pe[0xB0..0xB8].copy_from_slice(&0x1_4000_0000u64.to_le_bytes()); // ImageBase
+        pe[0xD0..0xD4].copy_from_slice(&0x3000u32.to_le_bytes()); // SizeOfImage
+        pe[0xD4..0xD8].copy_from_slice(&0x200u32.to_le_bytes()); // SizeOfHeaders
+        pe[0x104..0x108].copy_from_slice(&16u32.to_le_bytes());
+
+        // .pdata at RVA 0x1020 (size 24): 1 valid + 1 invalid (begin >= end)
+        pe[0x120..0x124].copy_from_slice(&0x1020u32.to_le_bytes());
+        pe[0x124..0x128].copy_from_slice(&24u32.to_le_bytes());
+
+        // .tls directory at RVA 0x2000 (size 40)
+        pe[0x150..0x154].copy_from_slice(&0x2000u32.to_le_bytes());
+        pe[0x154..0x158].copy_from_slice(&40u32.to_le_bytes());
+
+        // Base relocation block at RVA 0x2100 (size 16) to relocate TLS raw_start, raw_end, addr_of_index
+        pe[0x130..0x134].copy_from_slice(&0x2100u32.to_le_bytes());
+        pe[0x134..0x138].copy_from_slice(&16u32.to_le_bytes());
+
+        // Section .text at VA=0x1000, RawPtr=0x1000, RawSize=0x2000, RWX
+        pe[0x188..0x18D].copy_from_slice(b".text");
+        pe[0x190..0x194].copy_from_slice(&0x2000u32.to_le_bytes());
+        pe[0x194..0x198].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[0x198..0x19C].copy_from_slice(&0x2000u32.to_le_bytes());
+        pe[0x19C..0x1A0].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[0x1AC..0x1B0].copy_from_slice(&0xE000_0020u32.to_le_bytes());
+
+        // mov eax, 7; ret
+        pe[0x1000..0x1006].copy_from_slice(&[0xB8, 7, 0, 0, 0, 0xC3]);
+        // Valid RUNTIME_FUNCTION
+        pe[0x1020..0x1024].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[0x1024..0x1028].copy_from_slice(&0x1006u32.to_le_bytes());
+        pe[0x1028..0x102C].copy_from_slice(&0x1040u32.to_le_bytes());
+        // Invalid RUNTIME_FUNCTION (begin == end)
+        pe[0x102C..0x1030].copy_from_slice(&0x1050u32.to_le_bytes());
+        pe[0x1030..0x1034].copy_from_slice(&0x1050u32.to_le_bytes());
+        pe[0x1040] = 0x01;
+
+        // IMAGE_TLS_DIRECTORY64 at 0x2000: raw 0x2040..0x2050 (16B), index at 0x2060, zero_fill=16
+        pe[0x2000..0x2008].copy_from_slice(&0x1_4000_2040u64.to_le_bytes());
+        pe[0x2008..0x2010].copy_from_slice(&0x1_4000_2050u64.to_le_bytes());
+        pe[0x2010..0x2018].copy_from_slice(&0x1_4000_2060u64.to_le_bytes());
+        pe[0x2020..0x2024].copy_from_slice(&16u32.to_le_bytes());
+
+        // Reloc block at 0x2100: page RVA=0x2000, size=16, 3x DIR64 (0xA000 | off) + pad
+        pe[0x2100..0x2104].copy_from_slice(&0x2000u32.to_le_bytes());
+        pe[0x2104..0x2108].copy_from_slice(&16u32.to_le_bytes());
+        pe[0x2108..0x210A].copy_from_slice(&0xA000u16.to_le_bytes());
+        pe[0x210A..0x210C].copy_from_slice(&0xA008u16.to_le_bytes());
+        pe[0x210C..0x210E].copy_from_slice(&0xA010u16.to_le_bytes());
+
+        let (stats, rc) = load_and_run_pe64(&pe, Path::new("."), true).expect("in-process TLS PE64 run");
+        assert_eq!(rc, 7);
+        assert_eq!(stats.pdata_entries, 1);
+        assert_eq!(stats.static_tls_bytes, 32);
     }
 }

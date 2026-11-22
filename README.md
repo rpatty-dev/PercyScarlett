@@ -30,8 +30,9 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
 | **Disk Overhead** | **0 GB** (NTFS junctions + hardlinks) | ~350 GB extracted intermediates |
 | **CPU Execution** | **Native x86-64** (`machine=0x8664`) | Native / static recompile |
 | **Shipped Sidecar DLLs** | **6/6 live-loaded on Win11 (`LoadLibraryW`)** | Untested |
-| **Compiled Shim DLLs** | **9 Rust `cdylib` DLLs** (`17/17` tests passing, `0` warnings) | Skeleton / Incomplete |
-| **Shader Recompiler** | **Clean-room RDNA2 -> HLSL -> SM 6.6 DXIL (`dxcompiler.dll`) + DXBC** (`21,522/21,522` = **100.0%** on real TheBig6 😉 shaders) | Partial / External |
+| **Compiled Shim DLLs** | **9 Rust `cdylib` DLLs** (`22/22` tests passing, `0` warnings) | Skeleton / Incomplete |
+| **PE32+ Loader** | **In-process `.reloc`, sanitized `.pdata`, static `.tls` (`gs:[0x58]`), TLS callbacks & missing-import audit** | Basic mapper |
+| **Shader Recompiler** | **Clean-room RDNA2 -> HLSL (`SOPP` CFG + Wave64 intrinsics + `s_code_end`) -> SM 6.6 DXIL (`dxcompiler.dll`) + DXBC** (`21,522/21,522` = **100.0%** on real TheBig6 😉 shaders) | Partial / External |
 | **Day-1 Crash Telemetry** | **Built-in VEH fault logger** + `PERCY_XMEM_LOG` + `PERCY_D3D12_LOG` + `report.json` | External debugger required |
 | **Xbox VFS & Auto-Stubs** | **`G:/T:/S:` rewrite** + `percyscarlett stubgen` | Manual |
 
@@ -188,15 +189,15 @@ cargo build --release --workspace
 
 ---
 
-## Tests (`20/20 passing`)
+## Tests (`22/22 passing`)
 
 ```powershell
 cargo test --workspace
 ```
 
 - `e2e_bringup` (1): Synthetic PE32+ `scarlett_guest.exe` build, `inspect`, `stubgen`, and live execution across all **9** shim DLLs (including real hardware `D3D12XboxCreateDevice`, `WaitForOriginX`, `PresentX`, `XAudio2Create`)
-- `percyscarlett` (6): Dashboard semver + PowerShell path quoting, PE32+ parser, in-process PE32+ mapper + `.pdata` `RtlAddFunctionTable` execution (`pe_loader`), Win32 `VirtualAlloc` pool, live `kernel32.dll` forwarding
-- `d3d12_xs` (5): Host `d3d12.dll` symbol forwarding, `ID3D12DeviceX` COM wrapper, RDNA2 ALU/SMEM/Mesh lifter, live `d3dcompiler_47.dll` `DXBC` compilation, and live `dxcompiler.dll` SM 6.6 `DXIL` compilation (`VS`/`PS`/`CS`/`Mesh`/`RT`) + `PresentX`/`CommandQueueXProxy`
+- `percyscarlett` (7): Dashboard semver + PowerShell path quoting, PE32+ parser, in-process PE32+ mapper + sanitized `.pdata` `RtlAddFunctionTable` + static `.tls` (`gs:[0x58]`) + missing-import audit (`pe_loader`), Win32 `VirtualAlloc` pool, live `kernel32.dll` forwarding
+- `d3d12_xs` (6): Host `d3d12.dll` symbol forwarding, `ID3D12DeviceX` COM wrapper, RDNA2 ALU/SMEM/LDS/Mesh + `SOPP` CFG branches + Wave64 intrinsics + `s_code_end` lifter, live `d3dcompiler_47.dll` `DXBC` compilation, and live `dxcompiler.dll` SM 6.6 `DXIL` compilation (`VS`/`PS`/`CS`/`Mesh`/`RT`) + `PresentX`/`CommandQueueXProxy`
 - `xmem` (1), `kernelx` (1), `xg_xs` (1), `xaudio2_9` (1), `xgameruntime` (1), `dstorage` (1), `winrt_xs` (1), `GameInput` (1): C-ABI exports, COM vtables, `HSTRING`, VFS rewrite, `XGameSave` disk persistence, KBM->Gamepad `GameInput`, `XAudio2Create` voices, and offline GDK runtime checks
 
 ---

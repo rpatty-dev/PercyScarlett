@@ -107,16 +107,20 @@ fn main() {
                     Ok(data) => match pe_loader::load_and_run_pe64(&data, &shim_dir, true) {
                         Ok((st, rc)) => {
                             println!(
-                                "Executed {} (base=0x{:x}, entry=0x{:x}, pdata={}, tls={}, relocs={}, resolved={}, stubbed={}) -> rc={rc}",
+                                "Executed {} (base=0x{:x}, entry=0x{:x}, pdata={}, tls_cb={}, tls_bytes={}, relocs={}, resolved={}, stubbed={}) -> rc={rc}",
                                 exe_path.display(),
                                 st.mapped_base,
                                 st.entry_va,
                                 st.pdata_entries,
                                 st.tls_callbacks,
+                                st.static_tls_bytes,
                                 st.relocations_applied,
                                 st.resolved_imports,
                                 st.stubbed_imports
                             );
+                            if !st.missing_imports.is_empty() {
+                                println!("Missing imports ({}): {}", st.missing_imports.len(), st.missing_imports.join(", "));
+                            }
                         }
                         Err(e) => eprintln!("Run failed: {e}"),
                     },
