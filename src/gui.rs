@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
@@ -373,7 +373,14 @@ fn spawn_install_update(ver: String, upd: Arc<Mutex<UpdateState>>, ctx: egui::Co
                 }
             }
             let _ = fs::remove_dir_all(&tmp);
-            Command::new(&cur_exe).arg("gui").spawn().map_err(|e| format!("Relaunch failed: {e}"))?;
+            // Null stdio: after FreeConsole the inherited console handles are dead and CreateProcess rejects them.
+            silent_cmd(cur_exe.to_str().ok_or("bad exe path")?)
+                .args(["gui", "--relaunch"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("v{ver} installed, but relaunch failed ({e}). Start PercyScarlett again."))?;
             std::process::exit(0);
         })();
         if let Err(err) = res {
@@ -844,14 +851,25 @@ pub fn run_dashboard() -> eframe::Result<()> {
     {
         extern "system" {
             fn CreateMutexW(attrs: *const std::ffi::c_void, initial: i32, name: *const u16) -> usize;
+            fn CloseHandle(h: usize) -> i32;
             fn GetLastError() -> u32;
             fn FindWindowW(cls: *const u16, title: *const u16) -> usize;
             fn ShowWindow(hwnd: usize, cmd: i32) -> i32;
             fn SetForegroundWindow(hwnd: usize) -> i32;
         }
         let mname: Vec<u16> = "Local\\PercyScarlettDashboard\0".encode_utf16().collect();
+        // After a self-update the old instance may still hold the mutex for a moment; wait for it.
+        let relaunch = std::env::args().any(|a| a == "--relaunch");
         unsafe {
-            let _h = CreateMutexW(std::ptr::null(), 1, mname.as_ptr());
+            let mut h = CreateMutexW(std::ptr::null(), 1, mname.as_ptr());
+            for _ in 0..50 {
+                if !relaunch || GetLastError() != 183 {
+                    break;
+                }
+                CloseHandle(h);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                h = CreateMutexW(std::ptr::null(), 1, mname.as_ptr());
+            }
             if GetLastError() == 183 {
                 let wtitle: Vec<u16> = "PercyScarlett — Xbox Series X|S Dashboard\0".encode_utf16().collect();
                 let hwnd = FindWindowW(std::ptr::null(), wtitle.as_ptr());
