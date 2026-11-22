@@ -4,6 +4,11 @@
 
 <h1 align="center">PercyScarlett</h1>
 
+<p align="center">
+  <a href="https://rpatty-dev.github.io/PercyScarlett/"><strong>Live Proof & Benchmark Site (GitHub Pages)</strong></a> ·
+  <a href="docs/CODENAME_G6_PROOF.md"><strong>Technical Bring-Up Architecture</strong></a>
+</p>
+
 **Clean-room Rust translation layer, GDK shim suite, and PE32+ inspection toolkit for running unencrypted Xbox Series X|S (Scarlett) executables natively on Windows x64 — built specifically for TheBig6 😉.**
 
 Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `0 GB` duplicate disk overhead.
@@ -68,6 +73,20 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
    v[2] = asuint(asfloat(v[1]) + asfloat(v[0]));
    /* exp_prim v[0,0,0] */
    // s_endpgm
+   ```
+
+5. **Live Hardware GDK Sample Execution ([samples/scarlett_sample.rs](samples/scarlett_sample.rs))**
+   Compiles and launches a clean-room GDK sample executable against PercyScarlett's compiled DLLs via `percyscarlett launch`, creating a real hardware `ID3D12Device` + `ID3D12CommandQueue` + Win32 `HWND` + `IDXGISwapChain1`, compiling RDNA2 VS/PS to SM 6.6 DXIL live, initializing `XAudio2Create`, and presenting 10 DXGI frames via `PresentX`:
+   ```text
+   [ScarlettSample] XSystemGetDeviceType = 4
+   [ScarlettSample] XAudio2Create OK (0x1f29576c3e0)
+   [ScarlettSample] D3D12XboxCreateDevice OK (0x1f2957ecd00)
+   [ScarlettSample] ID3D12CommandQueue created (0x1f2979be090)
+   [ScarlettSample] Auto-HWND + IDXGISwapChain1 created!
+   [ScarlettSample] RDNA2->VS_6_6 DXIL compiled (7132 bytes)
+   [ScarlettSample] RDNA2->PS_6_6 DXIL compiled (4592 bytes)
+   [ScarlettSample] Presented 10 real DXGI frames via PresentX!
+   Launched target\release\scarlett_sample.exe with PercyScarlett overlay (PID 15256)
    ```
 
 <details>

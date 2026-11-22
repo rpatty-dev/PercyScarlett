@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PercyScarlett — Clean-Room Xbox Series (Scarlett) Compatibility Layer</title>
+  <link rel="icon" type="image/png" href="mascot.png" />
+  <style>
+    :root {
+      --bg: #0b0d12;
+      --card: #131722;
+      --border: #23293a;
+      --text: #e6eaf2;
+      --muted: #98a2b3;
+      --green: #52c440;
+      --purple: #a855f7;
+      --accent: #107c10;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: radial-gradient(circle at top right, #16241a 0%, var(--bg) 45%);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .wrap { max-width: 1060px; margin: 0 auto; padding: 36px 20px 64px; }
+    header {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 28px;
+      background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+      padding: 28px; margin-bottom: 28px;
+    }
+    header img { width: 150px; height: 150px; object-fit: contain; }
+    h1 { margin: 0 0 8px; font-size: 2.2rem; }
+    .subtitle { color: var(--muted); margin: 0 0 14px; font-size: 1.05rem; }
+    .badges { display: flex; flex-wrap: wrap; gap: 8px; }
+    .badge {
+      font-size: 0.82rem; font-weight: 600; padding: 4px 10px; border-radius: 999px;
+      background: rgba(82, 196, 64, 0.14); color: var(--green); border: 1px solid rgba(82, 196, 64, 0.35);
+    }
+    .badge.p {
+      background: rgba(168, 85, 247, 0.14); color: #d8b4fe; border-color: rgba(168, 85, 247, 0.35);
+    }
+    .stats {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 16px; margin-bottom: 28px;
+    }
+    .stat {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px;
+    }
+    .stat .num { font-size: 1.9rem; font-weight: 800; color: var(--green); }
+    .stat .lbl { color: var(--muted); font-size: 0.9rem; }
+    section {
+      background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+      padding: 24px; margin-bottom: 24px;
+    }
+    h2 { margin-top: 0; font-size: 1.35rem; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 0.92rem; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; }
+    .win { color: var(--green); font-weight: 700; }
+    .warn { color: #fbbf24; font-weight: 600; }
+    pre {
+      background: #090b10; border: 1px solid var(--border); border-radius: 10px;
+      padding: 14px; overflow-x: auto; font-size: 0.85rem; color: #d1fae5;
+    }
+    a { color: var(--green); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    footer { text-align: center; color: var(--muted); font-size: 0.85rem; margin-top: 32px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img src="mascot.png" alt="PercyScarlett Harlequin Bunny Xbox Mascot" />
+      <div>
+        <h1>PercyScarlett</h1>
+        <p class="subtitle">Clean-room Rust Xbox Series X|S (Scarlett) translation layer, GDK shim suite &amp; SM 6.6 DXIL shader recompiler for Windows x64 — built for <strong>TheBig6 😉</strong>.</p>
+        <div class="badges">
+          <span class="badge">21,522 / 21,522 (100.0%) SM 6.6 DXIL</span>
+          <span class="badge">17 / 17 Tests Passing · 0 Warnings</span>
+          <span class="badge">9 Compiled Rust cdylib Shims</span>
+          <span class="badge p">6 / 6 Sidecar DLLs Live-Loaded</span>
+          <span class="badge p">0 GB Overlay Mount</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="num">100.0%</div>
+        <div class="lbl"><strong>21,522 / 21,522</strong> TheBig6 😉 RDNA2 shaders lifted &amp; compiled to SM 6.6 DXIL (<code>fail=0</code>)</div>
+      </div>
+      <div class="stat">
+        <div class="num">17 / 17</div>
+        <div class="lbl">Workspace unit &amp; E2E tests passing across all 9 <code>cdylib</code> shim DLLs</div>
+      </div>
+      <div class="stat">
+        <div class="num">6 / 6</div>
+        <div class="lbl">Shipped Xbox sidecar DLLs live-loaded on Windows 11 x64 (<code>LoadLibraryW</code>)</div>
+      </div>
+      <div class="stat">
+        <div class="num">0 GB</div>
+        <div class="lbl">Duplicate disk overhead via NTFS junction + hardlink overlay mount</div>
+      </div>
+    </div>
+
+    <section>
+      <h2>How PercyScarlett Compares Against Other Efforts</h2>
+      <p style="color:var(--muted); margin-top:0;">Based on verifiable public metrics from each repository and PortWatchVI:</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th>PercyScarlett (Ours)</th>
+            <th>xbox-emulator (#1)</th>
+            <th>XCL (#2)</th>
+            <th>ScarlettX (#3)</th>
+            <th>Leonida (#6)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Language / Architecture</strong></td>
+            <td class="win">Pure Rust, 9 cdylib shims</td>
+            <td>Rust runtime</td>
+            <td>Rust Wine-style</td>
+            <td>C++ HLE</td>
+            <td>Static recomp (Vulkan)</td>
+          </tr>
+          <tr>
+            <td><strong>TheBig6 😉 RDNA2 Shaders</strong></td>
+            <td class="win">21,522 / 21,522 (100.0%) SM 6.6 DXIL</td>
+            <td>~35% VS (no Mesh)</td>
+            <td>24,064 HLSL (sampled DXIL)</td>
+            <td>0% (no lifter)</td>
+            <td>Vulkan SPIR-V</td>
+          </tr>
+          <tr>
+            <td><strong>Mesh &amp; RT Shader Support</strong></td>
+            <td class="win">13,588 Mesh + 64 RT compiled</td>
+            <td>No Mesh shaders</td>
+            <td>HLSL/DXIL</td>
+            <td>None</td>
+            <td>Vulkan</td>
+          </tr>
+          <tr>
+            <td><strong>Shipped Sidecar DLLs</strong></td>
+            <td class="win">6 / 6 live-loaded on Win11</td>
+            <td>Runtime</td>
+            <td>Live-loaded</td>
+            <td>Shimmed</td>
+            <td>N/A</td>
+          </tr>
+          <tr>
+            <td><strong>Disk Overhead</strong></td>
+            <td class="win">0 GB (NTFS overlay)</td>
+            <td>Standard</td>
+            <td>Standard</td>
+            <td>Standard</td>
+            <td>Full rebuild</td>
+          </tr>
+          <tr>
+            <td><strong>Retail Non-TheBig6 Game</strong></td>
+            <td class="warn">Pending retail .exe (GDK sample proven)</td>
+            <td class="win">Fortnite lobby</td>
+            <td>Not yet</td>
+            <td class="win">Concept Destruction</td>
+            <td>Not yet</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Proof 1 — Full 21,522-Shader SM 6.6 DXIL Benchmark (<code>dxcompiler.dll</code>)</h2>
+      <p>Every shader in <code>shaders.rpf</code> (<code>PS09</code>) lifted from RDNA2 (GFX10.3) ISA to HLSL (with <code>PerDrawCB</code>, <code>g_tex[8]</code>, <code>g_samp[4]</code>, <code>MIMG</code>, <code>SMEM</code>, <code>LDS</code>, and Mesh/RT exports) and compiled live via <code>IDxcCompiler3::Compile</code>:</p>
+      <pre>PS09 Shaders: total=21522, benchmarked=21522, lifted=21522/21522 (100.0%) in 29.27s
+Stages: VS=89 PS=7730 CS=51 Mesh=13588 RT=64
+DXIL SM 6.6 (dxcompiler.dll): ok=21522/21522 (100.0%), fail=0</pre>
+    </section>
+
+    <section>
+      <h2>Proof 2 — Live Hardware GDK Sample Execution (<code>samples/scarlett_sample.rs</code>)</h2>
+      <p>Clean-room GDK sample launched via <code>percyscarlett launch</code> on Windows 11 x64, creating a real hardware <code>ID3D12Device</code> + <code>ID3D12CommandQueue</code> + Win32 <code>HWND</code> + <code>IDXGISwapChain1</code>, compiling RDNA2 VS/PS to SM 6.6 DXIL live, initializing <code>XAudio2Create</code>, and presenting 10 DXGI frames via <code>PresentX</code>:</p>
+      <pre>[ScarlettSample] XSystemGetDeviceType = 4
+[ScarlettSample] XAudio2Create OK (0x1f29576c3e0)
+[ScarlettSample] D3D12XboxCreateDevice OK (0x1f2957ecd00)
+[ScarlettSample] ID3D12CommandQueue created (0x1f2979be090)
+[ScarlettSample] Auto-HWND + IDXGISwapChain1 created!
+[ScarlettSample] RDNA2->VS_6_6 DXIL compiled (7132 bytes)
+[ScarlettSample] RDNA2->PS_6_6 DXIL compiled (4592 bytes)
+[ScarlettSample] Presented 10 real DXGI frames via PresentX!
+Launched target\release\scarlett_sample.exe with PercyScarlett overlay (PID 15256)</pre>
+    </section>
+
+    <section>
+      <h2>Proof 3 — Shipped Xbox Sidecar DLLs &amp; 17/17 Workspace Tests</h2>
+      <pre>[PASS] amd_fidelityfx_loader_xbox.dll loaded at 0x7ffd2e170000
+[PASS] amd_fidelityfx_upscaler_xbox.dll loaded at 0x7ffcdf570000
+[PASS] Bink2Scarlett.dll loaded at 0x7ffcdf5f0000
+[PASS] libHttpClient.GDK.dll loaded at 0x7ffcdf540000
+[PASS] XboxBvhBuilder.dll loaded at 0x7ffcdf5d0000
+[PASS] XCurl.dll loaded at 0x7ffcdf680000
+DLL verification: 6 passed, 0 failed</pre>
+      <p><strong>9 Compiled Shim DLLs</strong>: <code>kernelx.dll</code>, <code>d3d12_xs.dll</code>, <code>xmem.dll</code>, <code>xgameruntime.dll</code>, <code>dstorage.dll</code>, <code>GameInput.dll</code>, <code>xg_xs.dll</code>, <code>winrt_xs.dll</code>, <code>xaudio2_9.dll</code> — <a href="https://github.com/rpatty-dev/PercyScarlett">View Source on GitHub</a></p>
+    </section>
+
+    <footer>
+      PercyScarlett · Clean-room MIT-licensed interoperability research · No game files, keys, or proprietary SDKs hosted.
+    </footer>
+  </div>
+</body>
+</html>
