@@ -24,6 +24,7 @@ fn scarlett_guest_exe_end_to_end_bringup() {
         "-p", "gameinput",
         "-p", "kernelx",
         "-p", "xg_xs",
+        "-p", "xaudio2_9",
     ];
     if is_release {
         build_args.push("--release");
@@ -43,6 +44,7 @@ fn scarlett_guest_exe_end_to_end_bringup() {
     let gameinput_dll = target_dir.join("GameInput.dll");
     let kernelx_dll = target_dir.join("kernelx.dll");
     let xgxs_dll = target_dir.join("xg_xs.dll");
+    let xa2_dll = target_dir.join("xaudio2_9.dll");
     assert!(xmem_dll.exists(), "missing {}", xmem_dll.display());
     assert!(d3d12_dll.exists(), "missing {}", d3d12_dll.display());
     assert!(winrt_dll.exists(), "missing {}", winrt_dll.display());
@@ -51,6 +53,7 @@ fn scarlett_guest_exe_end_to_end_bringup() {
     assert!(gameinput_dll.exists(), "missing {}", gameinput_dll.display());
     assert!(kernelx_dll.exists(), "missing {}", kernelx_dll.display());
     assert!(xgxs_dll.exists(), "missing {}", xgxs_dll.display());
+    assert!(xa2_dll.exists(), "missing {}", xa2_dll.display());
 
     let work = std::env::temp_dir().join(format!("percyscarlett_e2e_{}", std::process::id()));
     let _ = fs::remove_dir_all(&work);
@@ -65,6 +68,7 @@ fn scarlett_guest_exe_end_to_end_bringup() {
     fs::copy(&gameinput_dll, work.join("GameInput.dll")).unwrap();
     fs::copy(&kernelx_dll, work.join("kernelx.dll")).unwrap();
     fs::copy(&xgxs_dll, work.join("xg_xs.dll")).unwrap();
+    fs::copy(&xa2_dll, work.join("xaudio2_9.dll")).unwrap();
 
     // Synthesize a real PE32+ executable importing xmem.dll + d3d12_xs.dll.
     let guest_src = work.join("scarlett_guest.rs");
@@ -93,6 +97,20 @@ extern "system" {
         riid: *const [u8; 16],
         out_dev: *mut usize,
     ) -> i32;
+    fn D3D12XboxCreateDevice(
+        adapter: usize,
+        params: usize,
+        riid: *const [u8; 16],
+        out_dev: *mut usize,
+    ) -> i32;
+    fn PresentX(queue: usize, params: usize, reserved: usize) -> i32;
+    fn WaitForOriginX(queue: usize, reserved: u64, timeout_us: u32) -> i32;
+    fn PercyGetPresentedFrameCount() -> u64;
+}
+
+#[link(name = "xaudio2_9", kind = "dylib")]
+extern "system" {
+    fn XAudio2Create(out_xa2: *mut usize, flags: u32, processor: u32) -> i32;
 }
 
 #[link(name = "winrt_xs", kind = "dylib")]
@@ -172,13 +190,27 @@ fn main() {
         assert_eq!(hr, 0, "D3D12SerializeRootSignature failed: 0x{hr:08x}");
         assert_ne!(blob, 0);
 
-        // Probe D3D12CreateDevice forwarding (IID_ID3D12Device) with null out_dev to verify forwarding != E_NOTIMPL.
+        // Real IID_ID3D12Device {189819f1-1db6-4b57-be54-1821339b85f7}
         let iid_device: [u8; 16] = [
-            0xEB, 0x6F, 0x98, 0x18, 0x1B, 0x4A, 0x62, 0x4C,
-            0xBA, 0x52, 0xD7, 0x19, 0x1D, 0xAB, 0x2A, 0xEF,
+            0xF1, 0x19, 0x98, 0x18, 0xB6, 0x1D, 0x57, 0x4B,
+            0xBE, 0x54, 0x18, 0x21, 0x33, 0x9B, 0x85, 0xF7,
         ];
         let hr_dev = D3D12CreateDevice(0, 0xB000, &iid_device, core::ptr::null_mut());
         assert_ne!(hr_dev, 0x8000_4001u32 as i32, "D3D12CreateDevice must forward, not E_NOTIMPL");
+
+        let mut xdev = 0usize;
+        let hr_xdev = D3D12XboxCreateDevice(0, 0, &iid_device, &mut xdev);
+        assert_eq!(hr_xdev, 0, "D3D12XboxCreateDevice failed: 0x{hr_xdev:08x}");
+        assert_ne!(xdev, 0);
+
+        let before_frames = PercyGetPresentedFrameCount();
+        assert_eq!(WaitForOriginX(0, 0, 16667), 0);
+        assert_eq!(PresentX(0, 0, 0), 0);
+        assert_eq!(PercyGetPresentedFrameCount(), before_frames + 1);
+
+        let mut xa2 = 0usize;
+        assert_eq!(XAudio2Create(&mut xa2, 0, 1), 0);
+        assert_ne!(xa2, 0);
 
         assert_eq!(RoInitialize(1), 0);
         let s: [u16; 3] = [b'G' as u16, b'D' as u16, b'K' as u16];

@@ -92,6 +92,71 @@ pub unsafe extern "system" fn XGCreateTexture2DComputer(
     S_OK
 }
 
+#[repr(C)]
+pub struct XgTexture2DLayout {
+    pub row_pitch_bytes: u32,
+    pub slice_pitch_bytes: u32,
+    pub total_bytes: u64,
+    pub tile_mode: u32,
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XGComputeTexture2DLayout(
+    width: u32,
+    height: u32,
+    dxgi_format: u32,
+    tile_mode: u32,
+    out_layout: *mut XgTexture2DLayout,
+) -> i32 {
+    if out_layout.is_null() {
+        return E_POINTER;
+    }
+    let mut info = XgFormatBlockInfo { block_width: 1, block_height: 1, bytes_per_block: 4 };
+    XGGetFormatBlockInfo(dxgi_format, &mut info);
+    let bw = (width.max(1) + info.block_width - 1) / info.block_width;
+    let bh = (height.max(1) + info.block_height - 1) / info.block_height;
+    let row_pitch = ((bw * info.bytes_per_block + 255) / 256) * 256;
+    let slice_pitch = row_pitch * bh;
+    let total = if tile_mode != 0 {
+        ((slice_pitch as u64 + 4095) / 4096) * 4096
+    } else {
+        slice_pitch as u64
+    };
+    *out_layout = XgTexture2DLayout {
+        row_pitch_bytes: row_pitch,
+        slice_pitch_bytes: slice_pitch,
+        total_bytes: total,
+        tile_mode,
+    };
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XGTileTexture2D(
+    src_linear: *const u8,
+    dst_tiled: *mut u8,
+    size_bytes: usize,
+) -> i32 {
+    if src_linear.is_null() || dst_tiled.is_null() {
+        return E_POINTER;
+    }
+    std::ptr::copy_nonoverlapping(src_linear, dst_tiled, size_bytes);
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XGUntileTexture2D(
+    src_tiled: *const u8,
+    dst_linear: *mut u8,
+    size_bytes: usize,
+) -> i32 {
+    if src_tiled.is_null() || dst_linear.is_null() {
+        return E_POINTER;
+    }
+    std::ptr::copy_nonoverlapping(src_tiled, dst_linear, size_bytes);
+    S_OK
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,6 +167,10 @@ mod tests {
             let mut info = std::mem::zeroed::<XgFormatBlockInfo>();
             assert_eq!(XGGetFormatBlockInfo(98, &mut info), S_OK); // BC7_UNORM
             assert_eq!((info.block_width, info.block_height, info.bytes_per_block), (4, 4, 16));
+
+            let mut lay = std::mem::zeroed::<XgTexture2DLayout>();
+            assert_eq!(XGComputeTexture2DLayout(256, 256, 98, 1, &mut lay), S_OK);
+            assert!(lay.row_pitch_bytes >= 1024 && lay.total_bytes >= 65536);
 
             let mut comp: *mut c_void = std::ptr::null_mut();
             assert_eq!(XGCreateTexture2DComputer(std::ptr::null(), &mut comp), S_OK);

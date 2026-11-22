@@ -6,4 +6,4 @@ license = "MIT"
 
 [lib]
 name = "d3d12_xs"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]

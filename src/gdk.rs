@@ -17,7 +17,7 @@ pub const SHIM_SPECS: &[ScarlettShimSpec] = &[
     ScarlettShimSpec { dll: "xg_xs.dll", area: "Graphics", role: "XGGetFormatBlockInfo, XGCreateTexture2DComputer", status: "Live-DLL Verified (crates/xg_xs)" },
     ScarlettShimSpec { dll: "xgameruntime.dll", area: "GDK", role: "XTaskQueue, XAsync, XUserGetId, XGameSave", status: "Live-DLL Verified (crates/xgameruntime)" },
     ScarlettShimSpec { dll: "dstorage.dll", area: "IO", role: "DirectStorage configuration & factory shim", status: "Live-DLL Verified (crates/dstorage)" },
-    ScarlettShimSpec { dll: "XAudio2_9.dll", area: "Audio", role: "XAudio2 + XMA2 / Opus voice playback", status: "Host System32 Verified" },
+    ScarlettShimSpec { dll: "XAudio2_9.dll", area: "Audio", role: "XAudio2 + XMA2 / Opus voice playback", status: "Live-DLL Verified (crates/xaudio2_9)" },
     ScarlettShimSpec { dll: "GameInput.dll", area: "Input", role: "GameInputCreate controller/input shim", status: "Live-DLL Verified (crates/gameinput)" },
     ScarlettShimSpec { dll: "winrt_xs.dll", area: "Runtime", role: "WinRT RoInitialize / HSTRING / activation factories", status: "Live-DLL Verified (crates/winrt_xs)" },
     ScarlettShimSpec { dll: "chad.dll", area: "Audio", role: "XDsp* hardware DSP audio processing", status: "Planned (stubgen-ready)" },

@@ -15,7 +15,12 @@ members = [
     "crates/gameinput",
     "crates/kernelx",
     "crates/xg_xs",
+    "crates/xaudio2_9",
 ]
+
+[dependencies]
+flate2 = "1"
+d3d12_xs = { path = "crates/d3d12_xs" }
 
 [[bin]]
 name = "percyscarlett"

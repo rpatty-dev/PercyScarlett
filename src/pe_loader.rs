@@ -1,0 +1,351 @@
+use std::collections::HashMap;
+use std::ffi::{c_void, CString};
+use std::path::Path;
+
+#[cfg(windows)]
+extern "system" {
+    fn VirtualAlloc(addr: usize, size: usize, alloc_type: u32, protect: u32) -> usize;
+    fn VirtualProtect(addr: *mut c_void, size: usize, new_protect: u32, old_protect: *mut u32) -> i32;
+    fn LoadLibraryA(name: *const i8) -> usize;
+    fn GetProcAddress(module: usize, name: *const i8) -> usize;
+    fn RtlAddFunctionTable(function_table: *const c_void, entry_count: u32, base_address: u64) -> u8;
+}
+
+unsafe extern "system" fn unresolved_xbox_stub() -> i32 {
+    0
+}
+
+fn ru16(b: &[u8], o: usize) -> u16 {
+    b.get(o..o + 2)
+        .map(|s| u16::from_le_bytes([s[0], s[1]]))
+        .unwrap_or(0)
+}
+fn ru32(b: &[u8], o: usize) -> u32 {
+    b.get(o..o + 4)
+        .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+        .unwrap_or(0)
+}
+fn ru64(b: &[u8], o: usize) -> u64 {
+    b.get(o..o + 8)
+        .map(|s| u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]))
+        .unwrap_or(0)
+}
+
+unsafe fn read_cstr_mem(ptr: *const u8) -> String {
+    let mut len = 0usize;
+    while len < 512 && *ptr.add(len) != 0 {
+        len += 1;
+    }
+    String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedImageStats {
+    pub mapped_base: u64,
+    pub entry_va: u64,
+    pub pdata_entries: u32,
+    pub tls_callbacks: usize,
+    pub resolved_imports: usize,
+    pub stubbed_imports: usize,
+    pub relocations_applied: usize,
+}
+
+#[cfg(windows)]
+fn resolve_shim_or_host_dll(dll_name: &str, shim_dir: &Path, cache: &mut HashMap<String, usize>) -> usize {
+    let key = dll_name.to_ascii_lowercase();
+    if let Some(&h) = cache.get(&key) {
+        return h;
+    }
+    let shim_names = [
+        "xmem.dll",
+        "kernelx.dll",
+        "d3d12_xs.dll",
+        "xg_xs.dll",
+        "xgameruntime.dll",
+        "dstorage.dll",
+        "gameinput.dll",
+        "winrt_xs.dll",
+        "xaudio2_9.dll",
+    ];
+    let mut handle = 0usize;
+    if shim_names.contains(&key.as_str()) {
+        let p = shim_dir.join(dll_name);
+        if let Ok(cs) = CString::new(p.to_string_lossy().as_bytes()) {
+            handle = unsafe { LoadLibraryA(cs.as_ptr()) };
+        }
+    }
+    if handle == 0 {
+        if let Ok(cs) = CString::new(dll_name) {
+            handle = unsafe { LoadLibraryA(cs.as_ptr()) };
+        }
+    }
+    if handle == 0 && (key == "kernelx.dll" || key == "kernel32.dll") {
+        let k32 = CString::new("kernel32.dll").unwrap();
+        handle = unsafe { LoadLibraryA(k32.as_ptr()) };
+    }
+    cache.insert(key, handle);
+    handle
+}
+
+/// Maps a PE32+ executable in-process, applies `.reloc` base relocations, resolves IAT imports
+/// (prioritizing PercyScarlett shim DLLs), registers `.pdata` unwind entries via `RtlAddFunctionTable`,
+/// invokes TLS callbacks, and executes `AddressOfEntryPoint`.
+#[cfg(windows)]
+pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> Result<(LoadedImageStats, i32), String> {
+    if data.len() < 0x100 || &data[0..2] != b"MZ" {
+        return Err("Not an MZ executable".into());
+    }
+    let pe_off = ru32(data, 0x3C) as usize;
+    if data.get(pe_off..pe_off + 4) != Some(b"PE\0\0") {
+        return Err("Missing PE signature".into());
+    }
+    let machine = ru16(data, pe_off + 4);
+    if machine != 0x8664 {
+        return Err(format!("Unsupported machine 0x{machine:04x}"));
+    }
+    let n_sec = ru16(data, pe_off + 6) as usize;
+    let opt_sz = ru16(data, pe_off + 20) as usize;
+    let opt_off = pe_off + 24;
+    if ru16(data, opt_off) != 0x020B {
+        return Err("Expected PE32+ (0x020B)".into());
+    }
+
+    let entry_rva = ru32(data, opt_off + 16);
+    let pref_base = ru64(data, opt_off + 24);
+    let size_of_image = ru32(data, opt_off + 56) as usize;
+    let size_of_headers = ru32(data, opt_off + 60) as usize;
+    let num_rvas = ru32(data, opt_off + 108) as usize;
+    let dd = |idx: usize| -> (u32, u32) {
+        if idx < num_rvas {
+            let o = opt_off + 112 + idx * 8;
+            (ru32(data, o), ru32(data, o + 4))
+        } else {
+            (0, 0)
+        }
+    };
+
+    unsafe {
+        let mut base = VirtualAlloc(pref_base as usize, size_of_image, 0x3000, 0x04) as *mut c_void;
+        if base.is_null() {
+            base = VirtualAlloc(0, size_of_image, 0x3000, 0x04) as *mut c_void;
+        }
+        if base.is_null() {
+            return Err("VirtualAlloc failed for PE32+ image".into());
+        }
+        let base_u8 = base as *mut u8;
+        let hdr_copy = size_of_headers.min(data.len()).min(size_of_image);
+        std::ptr::copy_nonoverlapping(data.as_ptr(), base_u8, hdr_copy);
+
+        let sec_off = opt_off + opt_sz;
+        let mut sec_protects = Vec::with_capacity(n_sec);
+        for i in 0..n_sec {
+            let o = sec_off + i * 40;
+            let vsize = ru32(data, o + 8) as usize;
+            let vaddr = ru32(data, o + 12) as usize;
+            let rsize = ru32(data, o + 16) as usize;
+            let rptr = ru32(data, o + 20) as usize;
+            let chars = ru32(data, o + 36);
+            if vaddr < size_of_image && rsize > 0 && rptr + rsize <= data.len() {
+                let n = rsize.min(size_of_image - vaddr);
+                std::ptr::copy_nonoverlapping(data.as_ptr().add(rptr), base_u8.add(vaddr), n);
+            }
+            sec_protects.push((vaddr, vsize.max(rsize), chars));
+        }
+
+        // Base relocations (.reloc, directory index 5)
+        let delta = (base as u64).wrapping_sub(pref_base) as i64;
+        let mut relocations_applied = 0usize;
+        let (reloc_rva, reloc_sz) = dd(5);
+        if delta != 0 && reloc_rva != 0 && reloc_sz >= 8 {
+            let mut off = 0usize;
+            while off + 8 <= reloc_sz as usize {
+                let blk_rva = *(base_u8.add(reloc_rva as usize + off) as *const u32);
+                let blk_sz = *(base_u8.add(reloc_rva as usize + off + 4) as *const u32) as usize;
+                if blk_sz < 8 {
+                    break;
+                }
+                let count = (blk_sz - 8) / 2;
+                let entries = base_u8.add(reloc_rva as usize + off + 8) as *const u16;
+                for j in 0..count {
+                    let ent = *entries.add(j);
+                    let ty = ent >> 12;
+                    let r_off = (ent & 0x0FFF) as usize;
+                    if ty == 10 {
+                        // IMAGE_REL_BASED_DIR64
+                        let p = base_u8.add(blk_rva as usize + r_off) as *mut u64;
+                        *p = (*p as i64).wrapping_add(delta) as u64;
+                        relocations_applied += 1;
+                    }
+                }
+                off += blk_sz;
+            }
+        }
+
+        // IAT import resolution (directory index 1)
+        let mut dll_cache: HashMap<String, usize> = HashMap::new();
+        let mut resolved_imports = 0usize;
+        let mut stubbed_imports = 0usize;
+        let (imp_rva, _) = dd(1);
+        if imp_rva != 0 {
+            let mut desc_off = imp_rva as usize;
+            while desc_off + 20 <= size_of_image {
+                let oft = *(base_u8.add(desc_off) as *const u32);
+                let name_rva = *(base_u8.add(desc_off + 12) as *const u32);
+                let ft = *(base_u8.add(desc_off + 16) as *const u32);
+                if name_rva == 0 {
+                    break;
+                }
+                let dll_name = read_cstr_mem(base_u8.add(name_rva as usize));
+                let hmod = resolve_shim_or_host_dll(&dll_name, shim_dir, &mut dll_cache);
+                let int_rva = if oft != 0 { oft } else { ft } as usize;
+                let iat_rva = ft as usize;
+                let mut idx = 0usize;
+                while iat_rva + idx * 8 + 8 <= size_of_image {
+                    let thunk = *(base_u8.add(int_rva + idx * 8) as *const u64);
+                    if thunk == 0 {
+                        break;
+                    }
+                    let mut addr = 0usize;
+                    if hmod != 0 {
+                        if (thunk & (1u64 << 63)) != 0 {
+                            let ord = (thunk & 0xFFFF) as usize;
+                            addr = GetProcAddress(hmod, ord as *const i8);
+                        } else {
+                            let hint_rva = (thunk & 0x7FFF_FFFF) as usize;
+                            if hint_rva + 2 < size_of_image {
+                                let fn_name_ptr = base_u8.add(hint_rva + 2) as *const i8;
+                                addr = GetProcAddress(hmod, fn_name_ptr);
+                            }
+                        }
+                    }
+                    if addr != 0 {
+                        resolved_imports += 1;
+                    } else {
+                        addr = unresolved_xbox_stub as *const () as usize;
+                        stubbed_imports += 1;
+                    }
+                    *(base_u8.add(iat_rva + idx * 8) as *mut usize) = addr;
+                    idx += 1;
+                }
+                desc_off += 20;
+            }
+        }
+
+        // Apply section protections
+        for (vaddr, vsize, chars) in sec_protects {
+            if vsize == 0 || vaddr >= size_of_image {
+                continue;
+            }
+            let exec = (chars & 0x2000_0000) != 0;
+            let write = (chars & 0x8000_0000) != 0;
+            let prot = match (exec, write) {
+                (true, true) => 0x40,   // PAGE_EXECUTE_READWRITE
+                (true, false) => 0x20,  // PAGE_EXECUTE_READ
+                (false, true) => 0x04,  // PAGE_READWRITE
+                (false, false) => 0x02, // PAGE_READONLY
+            };
+            let mut old = 0u32;
+            VirtualProtect(base_u8.add(vaddr) as *mut c_void, vsize, prot, &mut old);
+        }
+
+        // Register .pdata SEH table (directory index 3)
+        let (pdata_rva, pdata_sz) = dd(3);
+        let pdata_entries = if pdata_rva != 0 && pdata_sz >= 12 {
+            let count = pdata_sz / 12;
+            let _ = RtlAddFunctionTable(
+                base_u8.add(pdata_rva as usize) as *const c_void,
+                count,
+                base as u64,
+            );
+            count
+        } else {
+            0
+        };
+
+        // Run TLS callbacks (directory index 9)
+        let mut tls_callbacks = 0usize;
+        let (tls_rva, tls_sz) = dd(9);
+        if tls_rva != 0 && tls_sz >= 24 {
+            // IMAGE_TLS_DIRECTORY64: +24 AddressOfCallBacks (VA)
+            let cb_va = *(base_u8.add(tls_rva as usize + 24) as *const u64);
+            if cb_va != 0 {
+                let mut cb_ptr = cb_va as *const u64;
+                while *cb_ptr != 0 && tls_callbacks < 64 {
+                    let cb: unsafe extern "system" fn(*mut c_void, u32, *mut c_void) =
+                        std::mem::transmute(*cb_ptr as usize);
+                    cb(base, 1 /* DLL_PROCESS_ATTACH */, std::ptr::null_mut());
+                    tls_callbacks += 1;
+                    cb_ptr = cb_ptr.add(1);
+                }
+            }
+        }
+
+        let entry_va = (base as u64).wrapping_add(entry_rva as u64);
+        let rc = if execute_entry && entry_rva != 0 {
+            let entry_fn: unsafe extern "system" fn() -> i32 = std::mem::transmute(entry_va as usize);
+            entry_fn()
+        } else {
+            0
+        };
+
+        Ok((
+            LoadedImageStats {
+                mapped_base: base as u64,
+                entry_va,
+                pdata_entries,
+                tls_callbacks,
+                resolved_imports,
+                stubbed_imports,
+                relocations_applied,
+            },
+            rc,
+        ))
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_relocates_registers_pdata_and_executes_pe64_in_process() {
+        // Build a minimal valid PE32+ in memory with .text (`mov eax, 42; ret`), .pdata, and .reloc
+        let mut pe = vec![0u8; 0x2000];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+        pe[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());
+        pe[0x94..0x96].copy_from_slice(&0xF0u16.to_le_bytes());
+        pe[0x98..0x9A].copy_from_slice(&0x020Bu16.to_le_bytes());
+        pe[0xA8..0xAC].copy_from_slice(&0x1000u32.to_le_bytes()); // entry RVA
+        pe[0xB0..0xB8].copy_from_slice(&0x1_4000_0000u64.to_le_bytes()); // ImageBase
+        pe[0xD0..0xD4].copy_from_slice(&0x2000u32.to_le_bytes()); // SizeOfImage
+        pe[0xD4..0xD8].copy_from_slice(&0x200u32.to_le_bytes()); // SizeOfHeaders
+        pe[0x104..0x108].copy_from_slice(&16u32.to_le_bytes());
+
+        // .pdata at RVA 0x1020 (size 12): 1 RUNTIME_FUNCTION entry
+        pe[0x120..0x124].copy_from_slice(&0x1020u32.to_le_bytes());
+        pe[0x124..0x128].copy_from_slice(&12u32.to_le_bytes());
+
+        // Section .text at VA=0x1000, RawPtr=0x1000, RawSize=0x1000, RX
+        pe[0x188..0x18D].copy_from_slice(b".text");
+        pe[0x190..0x194].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[0x194..0x198].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[0x198..0x19C].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[0x19C..0x1A0].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[0x1AC..0x1B0].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+
+        // x64 code at RVA 0x1000 (file 0x1000): mov eax, 42; ret
+        pe[0x1000..0x1006].copy_from_slice(&[0xB8, 42, 0, 0, 0, 0xC3]);
+        // RUNTIME_FUNCTION at 0x1020: Begin=0x1000, End=0x1006, Unwind=0x1030
+        pe[0x1020..0x1024].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[0x1024..0x1028].copy_from_slice(&0x1006u32.to_le_bytes());
+        pe[0x1028..0x102C].copy_from_slice(&0x1030u32.to_le_bytes());
+        pe[0x1030] = 0x01; // UNWIND_INFO version=1, flags=0
+
+        let (stats, rc) = load_and_run_pe64(&pe, Path::new("."), true).expect("in-process PE64 run");
+        assert_eq!(rc, 42);
+        assert_eq!(stats.pdata_entries, 1);
+    }
+}

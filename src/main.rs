@@ -1,5 +1,7 @@
 mod gdk;
 mod pe64;
+mod pe_loader;
+mod shader_bench;
 mod xmem;
 
 use std::collections::{HashMap, HashSet};
@@ -77,6 +79,45 @@ fn main() {
         Some("report") if args.len() >= 4 => {
             write_bringup_report(Path::new(&args[2]), Path::new(&args[3]));
         }
+        Some("run") if args.len() >= 3 => {
+            #[cfg(windows)]
+            {
+                let exe_path = Path::new(&args[2]);
+                let shim_dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                    .unwrap_or_else(|| Path::new(".").to_path_buf());
+                match fs::read(exe_path) {
+                    Ok(data) => match pe_loader::load_and_run_pe64(&data, &shim_dir, true) {
+                        Ok((st, rc)) => {
+                            println!(
+                                "Executed {} (base=0x{:x}, entry=0x{:x}, pdata={}, tls={}, relocs={}, resolved={}, stubbed={}) -> rc={rc}",
+                                exe_path.display(),
+                                st.mapped_base,
+                                st.entry_va,
+                                st.pdata_entries,
+                                st.tls_callbacks,
+                                st.relocations_applied,
+                                st.resolved_imports,
+                                st.stubbed_imports
+                            );
+                        }
+                        Err(e) => eprintln!("Run failed: {e}"),
+                    },
+                    Err(e) => eprintln!("Read error: {e}"),
+                }
+            }
+        }
+        Some("bench-shaders") if args.len() >= 3 => {
+            let p = Path::new(&args[2]);
+            let dxil = args.iter().any(|a| a == "--dxil");
+            let limit = args
+                .windows(2)
+                .find(|w| w[0] == "--limit")
+                .and_then(|w| w[1].parse::<usize>().ok())
+                .unwrap_or(0);
+            shader_bench::run_shader_benchmark(p, limit, dxil);
+        }
         _ => {
             println!("PercyScarlett v0.1.0 — Clean-Room Rust Scarlett Bring-Up Layer");
             println!("Usage:");
@@ -85,6 +126,8 @@ fn main() {
             println!("  percyscarlett verify-dlls <game_dir>");
             println!("  percyscarlett stubgen <game.exe> <out_dir>");
             println!("  percyscarlett report <game.exe> <report.json>");
+            println!("  percyscarlett run <game.exe>");
+            println!("  percyscarlett bench-shaders <shaders.rpf> [--dxil] [--limit N]");
             println!("  percyscarlett probe-mem");
             println!("  percyscarlett shims");
         }

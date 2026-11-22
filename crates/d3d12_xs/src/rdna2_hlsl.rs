@@ -9,6 +9,7 @@ pub enum ShaderStage {
     Compute,
     Mesh,
     Geometry,
+    RayTracing,
 }
 
 impl ShaderStage {
@@ -19,6 +20,7 @@ impl ShaderStage {
             Self::Compute => "cs",
             Self::Mesh => "ms",
             Self::Geometry => "gs",
+            Self::RayTracing => "rt",
         }
     }
 
@@ -28,7 +30,18 @@ impl ShaderStage {
             Self::Pixel => "ps_5_0",
             Self::Compute => "cs_5_0",
             Self::Geometry => "gs_5_0",
-            Self::Mesh => "cs_5_0", // SM 5.0 fallback target; SM 6.5 uses ms_6_5 via DXC
+            Self::Mesh | Self::RayTracing => "cs_5_0",
+        }
+    }
+
+    pub fn dxil_target(self) -> &'static str {
+        match self {
+            Self::Vertex => "vs_6_6",
+            Self::Pixel => "ps_6_6",
+            Self::Compute => "cs_6_6",
+            Self::Mesh => "ms_6_6",
+            Self::Geometry => "gs_6_6",
+            Self::RayTracing => "lib_6_6",
         }
     }
 }
@@ -96,6 +109,16 @@ fn fmt_src(src: u32, lit: Option<u32>, as_float: bool) -> String {
             }
         }
         _ => "0u".into(),
+    }
+}
+
+fn fmt_sdst(sdst: u32) -> String {
+    match sdst {
+        0..=105 => format!("s[{sdst}]"),
+        106 | 107 => "vcc".into(),
+        126 => "exec_lo".into(),
+        127 => "exec_hi".into(),
+        _ => "_s_sink".into(),
     }
 }
 
@@ -177,10 +200,10 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                 _ => 1,
             };
             for i in 0..count {
+                let dst = fmt_sdst(sdata + i);
                 let _ = writeln!(
                     hlsl_stmt,
-                    "s[{}] = g_cbuf.Load({}u);",
-                    sdata + i,
+                    "{dst} = g_cbuf.Load({}u);",
                     (imm_off + i) * 4
                 );
             }
@@ -347,16 +370,17 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
             };
             let a = fmt_src(ssrc0, lit, false);
             let b = fmt_src(ssrc1, lit, false);
+            let dst = fmt_sdst(sdst);
             hlsl_stmt = match op {
-                0x00 => format!("s[{sdst}] = {a} + {b};"),
-                0x01 => format!("s[{sdst}] = {a} - {b};"),
-                0x0E => format!("s[{sdst}] = {a} & {b};"),
-                0x10 => format!("s[{sdst}] = {a} | {b};"),
-                0x12 => format!("s[{sdst}] = {a} ^ {b};"),
-                0x1C => format!("s[{sdst}] = {a} << ({b} & 31u);"),
-                0x1E => format!("s[{sdst}] = {a} >> ({b} & 31u);"),
-                0x2C => format!("s[{sdst}] = asuint(asint({a}) * asint({b}));"),
-                _ => format!("s[{sdst}] = {a} ^ {b}; /* sop2_0x{op:02x} */"),
+                0x00 => format!("{dst} = {a} + {b};"),
+                0x01 => format!("{dst} = {a} - {b};"),
+                0x0E => format!("{dst} = {a} & {b};"),
+                0x10 => format!("{dst} = {a} | {b};"),
+                0x12 => format!("{dst} = {a} ^ {b};"),
+                0x1C => format!("{dst} = {a} << ({b} & 31u);"),
+                0x1E => format!("{dst} = {a} >> ({b} & 31u);"),
+                0x2C => format!("{dst} = asuint(asint({a}) * asint({b}));"),
+                _ => format!("{dst} = {a} ^ {b}; /* sop2_0x{op:02x} */"),
             };
             format!("sop2_0x{op:02x} s{sdst}, s{ssrc0}, s{ssrc1}")
         } else {
@@ -398,7 +422,7 @@ pub fn lift_to_hlsl(bytes: &[u8], hint: ShaderStage) -> (ShaderStage, String, us
     let stage = detect_stage(&ops, hint);
     let insn_count = ops.len();
     let export_count = ops.iter().filter(|o| o.is_export).count();
-    let uses_lds = ops.iter().any(|o| o.uses_lds);
+    let uses_lds = ops.iter().any(|o| o.uses_lds) && matches!(stage, ShaderStage::Compute | ShaderStage::Mesh);
 
     let mut hlsl = String::with_capacity(2048 + insn_count * 48);
     let _ = writeln!(
@@ -418,14 +442,17 @@ pub fn lift_to_hlsl(bytes: &[u8], hint: ShaderStage) -> (ShaderStage, String, us
     hlsl.push('\n');
 
     let mut body = String::with_capacity(1024 + insn_count * 40);
-    body.push_str("    uint s[106]; uint v[32]; uint vcc = 0u; uint exec_lo = 0xFFFFFFFFu; uint exec_hi = 0u;\n");
+    body.push_str("    uint s[106]; uint v[256]; uint vcc = 0u; uint exec_lo = 0xFFFFFFFFu; uint exec_hi = 0u; uint _s_sink = 0u;\n");
     body.push_str("    [unroll] for (uint _i = 0u; _i < 16u; ++_i) { s[_i] = 0u; }\n");
     body.push_str("    [unroll] for (uint _j = 0u; _j < 32u; ++_j) { v[_j] = 0u; }\n");
     body.push_str("    float4 exp_pos0 = float4(0.0, 0.0, 0.0, 1.0);\n");
-    body.push_str("    float4 exp_mrt[4] = { float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1) };\n");
-    body.push_str("    float4 exp_param[4] = { float4(0,0,0,0), float4(0,0,0,0), float4(0,0,0,0), float4(0,0,0,0) };\n");
+    body.push_str("    float4 exp_mrt[8] = { float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1) };\n");
+    body.push_str("    float4 exp_param[32]; [unroll] for (uint _p = 0u; _p < 32u; ++_p) { exp_param[_p] = float4(0,0,0,0); }\n");
 
     for op in &ops {
+        if op.uses_lds && !uses_lds {
+            continue;
+        }
         if !op.hlsl_stmt.is_empty() {
             for line in op.hlsl_stmt.lines() {
                 let _ = writeln!(body, "    {line}");
@@ -487,6 +514,11 @@ pub fn lift_to_hlsl(bytes: &[u8], hint: ShaderStage) -> (ShaderStage, String, us
                  \t[unroll] for (uint i = 0u; i < 3u; ++i) { o.pos = inp[i] + exp_pos0 * 0.0; stream.Append(o); }\n\
                  }\n",
             );
+        }
+        ShaderStage::RayTracing => {
+            hlsl.push_str("RWByteAddressBuffer g_rt_out : register(u0);\n[shader(\"raygeneration\")]\nvoid main() {\n");
+            hlsl.push_str(&body);
+            hlsl.push_str("    if (v[0] == 0xFFFFFFFEu) { g_rt_out.Store(0, v[1]); }\n}\n");
         }
     }
 

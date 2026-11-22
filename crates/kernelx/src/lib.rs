@@ -75,6 +75,44 @@ pub unsafe extern "system" fn SetThreadName(_thread: usize, _name: *const u16) -
     0
 }
 
+#[no_mangle]
+pub unsafe extern "system" fn XMemGetAuxiliaryTitleMemory(
+    size: usize,
+    _flags: u64,
+    out_ptr: *mut *mut c_void,
+) -> i32 {
+    if out_ptr.is_null() {
+        return 0x8000_4003u32 as i32;
+    }
+    *out_ptr = XMemAlloc(size, 0);
+    if (*out_ptr).is_null() { 0x8007_000Eu32 as i32 } else { 0 }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn AllocateTitlePhysicalPages(
+    _process: usize,
+    _flags: u32,
+    num_pages: usize,
+    _page_size: usize,
+    out_pfn: *mut u64,
+) -> i32 {
+    if !out_pfn.is_null() {
+        for i in 0..num_pages {
+            *out_pfn.add(i) = 0x1000 + i as u64;
+        }
+    }
+    1
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn FreeTitlePhysicalPages(
+    _process: usize,
+    _num_pages: usize,
+    _pfns: *const u64,
+) -> i32 {
+    1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,3 +7,4 @@ GEMINI.md
 mount/
 launch_build.bat
 *.log
+tools/dxc/

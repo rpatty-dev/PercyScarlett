@@ -3,8 +3,10 @@ pub mod rdna2_hlsl;
 use std::ffi::{c_void, CString};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+const S_OK: i32 = 0;
 
 const E_FAIL: i32 = 0x8000_4005u32 as i32;
 #[allow(dead_code)]
@@ -150,6 +152,196 @@ pub fn compile_hlsl_to_dxbc(hlsl: &str, stage: rdna2_hlsl::ShaderStage) -> Resul
         let bytes = std::slice::from_raw_parts(ptr, sz).to_vec();
         (vtbl.release)(code_blob);
         cache_store_blob("dxbc", cache_key.as_bytes(), &bytes);
+        Ok(bytes)
+    }
+}
+
+#[cfg(windows)]
+fn load_dxcompiler() -> Option<usize> {
+    static MOD: OnceLock<usize> = OnceLock::new();
+    let h = *MOD.get_or_init(|| unsafe {
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(p) = std::env::var("PERCY_DXC_DLL") {
+            if !p.is_empty() {
+                candidates.push(std::path::PathBuf::from(p));
+            }
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                candidates.push(dir.join("dxcompiler.dll"));
+                if let Some(parent) = dir.parent() {
+                    candidates.push(parent.join("dxcompiler.dll"));
+                    if let Some(root) = parent.parent() {
+                        candidates.push(root.join("tools").join("dxc").join("bin").join("x64").join("dxcompiler.dll"));
+                    }
+                }
+            }
+        }
+        candidates.push(std::path::PathBuf::from(r"tools\dxc\bin\x64\dxcompiler.dll"));
+        candidates.push(std::path::PathBuf::from("dxcompiler.dll"));
+        for c in candidates {
+            if let Ok(cs) = CString::new(c.to_string_lossy().as_bytes()) {
+                let m = LoadLibraryA(cs.as_ptr());
+                if m != 0 {
+                    return m;
+                }
+            }
+        }
+        0
+    });
+    if h != 0 { Some(h) } else { None }
+}
+
+/// Compiles lifted HLSL into SM 6.6 DXIL bytecode via `dxcompiler.dll` (`IDxcCompiler3::Compile`),
+/// supporting Vertex, Pixel, Compute, Mesh (`ms_6_6`), Geometry, and RayTracing (`lib_6_6`).
+#[cfg(windows)]
+pub fn compile_hlsl_to_dxil(hlsl: &str, stage: rdna2_hlsl::ShaderStage) -> Result<Vec<u8>, String> {
+    let target_str = stage.dxil_target();
+    let cache_key = format!("{target_str}:{hlsl}");
+    if let Some(cached) = cache_load_blob("dxil", cache_key.as_bytes()) {
+        return Ok(cached);
+    }
+
+    #[repr(C)]
+    struct DxcBuffer {
+        ptr: *const c_void,
+        size: usize,
+        encoding: u32,
+    }
+    #[repr(C)]
+    struct DxcBlobVtbl {
+        _qi: usize,
+        _add: usize,
+        release: unsafe extern "system" fn(*mut c_void) -> u32,
+        get_ptr: unsafe extern "system" fn(*mut c_void) -> *const u8,
+        get_size: unsafe extern "system" fn(*mut c_void) -> usize,
+    }
+    #[repr(C)]
+    struct DxcResultVtbl {
+        _qi: usize,
+        _add: usize,
+        release: unsafe extern "system" fn(*mut c_void) -> u32,
+        get_status: unsafe extern "system" fn(*mut c_void, *mut i32) -> i32,
+        get_result: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> i32,
+        get_error_buffer: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> i32,
+    }
+    #[repr(C)]
+    struct DxcCompiler3Vtbl {
+        _qi: usize,
+        _add: usize,
+        release: unsafe extern "system" fn(*mut c_void) -> u32,
+        compile: unsafe extern "system" fn(
+            *mut c_void,
+            *const DxcBuffer,
+            *const *const u16,
+            u32,
+            *mut c_void,
+            *const [u8; 16],
+            *mut *mut c_void,
+        ) -> i32,
+    }
+    type DxcCreateInstanceFn = unsafe extern "system" fn(
+        *const [u8; 16],
+        *const [u8; 16],
+        *mut *mut c_void,
+    ) -> i32;
+
+    const CLSID_DXC_COMPILER: [u8; 16] = [
+        0x93, 0x2d, 0xe2, 0x73, 0xce, 0xe6, 0xf3, 0x47, 0xb5, 0xbf, 0xf0, 0x66, 0x4f, 0x39, 0xc1, 0xb0,
+    ];
+    const IID_IDXC_COMPILER3: [u8; 16] = [
+        0x87, 0x46, 0x8b, 0x22, 0x6a, 0x5a, 0x30, 0x47, 0x90, 0x0c, 0x97, 0x02, 0xb2, 0x20, 0x3f, 0x54,
+    ];
+    const IID_IDXC_RESULT: [u8; 16] = [
+        0xda, 0x6c, 0x34, 0x58, 0xe7, 0xdd, 0x97, 0x44, 0x94, 0x61, 0x6f, 0x87, 0xaf, 0x5e, 0x06, 0x59,
+    ];
+
+    let Some(mod_h) = load_dxcompiler() else {
+        return Err("dxcompiler.dll not found".into());
+    };
+    unsafe {
+        let sym = CString::new("DxcCreateInstance").unwrap();
+        let addr = GetProcAddress(mod_h, sym.as_ptr());
+        if addr == 0 {
+            return Err("DxcCreateInstance export missing".into());
+        }
+        let create_inst: DxcCreateInstanceFn = std::mem::transmute(addr);
+        std::thread_local! {
+            static TL_COMPILER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        }
+        let mut compiler = TL_COMPILER.with(|c| c.get()) as *mut c_void;
+        if compiler.is_null() {
+            let hr = create_inst(&CLSID_DXC_COMPILER, &IID_IDXC_COMPILER3, &mut compiler);
+            if hr < 0 || compiler.is_null() {
+                return Err(format!("DxcCreateInstance failed: 0x{hr:08x}"));
+            }
+            TL_COMPILER.with(|c| c.set(compiler as usize));
+        }
+
+        let to_wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+        let w_e = to_wide("-E");
+        let w_main = to_wide("main");
+        let w_t = to_wide("-T");
+        let w_target = to_wide(target_str);
+        let w_o1 = to_wide("-Od");
+        let mut args = vec![w_e.as_ptr(), w_main.as_ptr(), w_t.as_ptr(), w_target.as_ptr(), w_o1.as_ptr()];
+        if stage == rdna2_hlsl::ShaderStage::RayTracing {
+            // lib_6_6 does not take -E entry point
+            args = vec![w_t.as_ptr(), w_target.as_ptr(), w_o1.as_ptr()];
+        }
+
+        let src_buf = DxcBuffer {
+            ptr: hlsl.as_ptr() as *const c_void,
+            size: hlsl.len(),
+            encoding: 65001, // DXC_CP_UTF8
+        };
+        let comp_vtbl = &*(*(compiler as *const *const DxcCompiler3Vtbl));
+        let mut res_ptr: *mut c_void = std::ptr::null_mut();
+        let hr_c = (comp_vtbl.compile)(
+            compiler,
+            &src_buf,
+            args.as_ptr(),
+            args.len() as u32,
+            std::ptr::null_mut(),
+            &IID_IDXC_RESULT,
+            &mut res_ptr,
+        );
+        if hr_c < 0 || res_ptr.is_null() {
+            return Err(format!("IDxcCompiler3::Compile failed: 0x{hr_c:08x}"));
+        }
+
+        let res_vtbl = &*(*(res_ptr as *const *const DxcResultVtbl));
+        let mut status: i32 = -1;
+        let _ = (res_vtbl.get_status)(res_ptr, &mut status);
+        if status < 0 {
+            let mut err_blob: *mut c_void = std::ptr::null_mut();
+            let mut msg = format!("DXC compile status: 0x{status:08x}");
+            if (res_vtbl.get_error_buffer)(res_ptr, &mut err_blob) >= 0 && !err_blob.is_null() {
+                let bvtbl = &*(*(err_blob as *const *const DxcBlobVtbl));
+                let ptr = (bvtbl.get_ptr)(err_blob);
+                let sz = (bvtbl.get_size)(err_blob);
+                if !ptr.is_null() && sz > 0 {
+                    msg = String::from_utf8_lossy(std::slice::from_raw_parts(ptr, sz)).into_owned();
+                }
+                (bvtbl.release)(err_blob);
+            }
+            (res_vtbl.release)(res_ptr);
+            return Err(msg);
+        }
+
+        let mut obj_blob: *mut c_void = std::ptr::null_mut();
+        let hr_r = (res_vtbl.get_result)(res_ptr, &mut obj_blob);
+        if hr_r < 0 || obj_blob.is_null() {
+            (res_vtbl.release)(res_ptr);
+            return Err(format!("IDxcResult::GetResult failed: 0x{hr_r:08x}"));
+        }
+        let bvtbl = &*(*(obj_blob as *const *const DxcBlobVtbl));
+        let ptr = (bvtbl.get_ptr)(obj_blob);
+        let sz = (bvtbl.get_size)(obj_blob);
+        let bytes = std::slice::from_raw_parts(ptr, sz).to_vec();
+        (bvtbl.release)(obj_blob);
+        (res_vtbl.release)(res_ptr);
+        cache_store_blob("dxil", cache_key.as_bytes(), &bytes);
         Ok(bytes)
     }
 }
@@ -462,6 +654,138 @@ pub unsafe extern "system" fn D3D12XboxCreateDevice(
     hr
 }
 
+static PRESENT_FRAMES: AtomicU64 = AtomicU64::new(0);
+static BOUND_SWAPCHAIN: AtomicUsize = AtomicUsize::new(0);
+
+#[no_mangle]
+pub unsafe extern "system" fn PercyRegisterSwapChain(swapchain: *mut c_void) {
+    BOUND_SWAPCHAIN.store(swapchain as usize, Ordering::Release);
+}
+
+#[no_mangle]
+pub extern "system" fn PercyGetPresentedFrameCount() -> u64 {
+    PRESENT_FRAMES.load(Ordering::Acquire)
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn PresentX(
+    _queue_or_plane: *mut c_void,
+    _present_params: *const c_void,
+    _reserved: *const c_void,
+) -> i32 {
+    let frame = PRESENT_FRAMES.fetch_add(1, Ordering::AcqRel) + 1;
+    let sc = BOUND_SWAPCHAIN.load(Ordering::Acquire) as *mut c_void;
+    if !sc.is_null() {
+        // IDXGISwapChain::Present is vtable slot 8
+        let vtbl = *(sc as *const *const *const c_void);
+        let present: unsafe extern "system" fn(*mut c_void, u32, u32) -> i32 =
+            std::mem::transmute(*vtbl.add(8));
+        return present(sc, 1, 0);
+    }
+    log_d3d12(&format!("PresentX frame={frame}"));
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn WaitForOriginX(
+    _queue: *mut c_void,
+    _reserved: u64,
+    _timeout_us: u32,
+) -> i32 {
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RegisterFrameEventX(
+    _queue: *mut c_void,
+    _event_type: u32,
+    _out_token: *mut u64,
+) -> i32 {
+    if !_out_token.is_null() {
+        *_out_token = 1;
+    }
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn SetFrameIntervalX(
+    _device: *mut c_void,
+    _period_us: u32,
+    _flags: u32,
+) -> i32 {
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn ScheduleFrameEventX(
+    _queue: *mut c_void,
+    _event_token: u64,
+    _flags: u32,
+) -> i32 {
+    S_OK
+}
+
+#[repr(C)]
+pub struct CommandQueueXProxy {
+    vtbl: *const [*const c_void; 24],
+    inner: *mut c_void,
+    refs: AtomicU32,
+}
+
+unsafe extern "system" fn cq_qi(this: *mut c_void, riid: *const c_void, out: *mut *mut c_void) -> i32 {
+    if out.is_null() { return 0x8000_4003u32 as i32; }
+    let p = &*(this as *const CommandQueueXProxy);
+    if p.inner.is_null() {
+        cq_add_ref(this);
+        *out = this;
+        return S_OK;
+    }
+    let inner_vtbl = *(p.inner as *const *const *const c_void);
+    let qi: unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> i32 =
+        std::mem::transmute(*inner_vtbl.add(0));
+    let mut raw: *mut c_void = std::ptr::null_mut();
+    let hr = qi(p.inner, riid, &mut raw);
+    if hr >= 0 && !raw.is_null() {
+        cq_add_ref(this);
+        *out = this;
+    } else {
+        *out = std::ptr::null_mut();
+    }
+    hr
+}
+unsafe extern "system" fn cq_add_ref(this: *mut c_void) -> u32 {
+    (*(this as *const CommandQueueXProxy)).refs.fetch_add(1, Ordering::Relaxed) + 1
+}
+unsafe extern "system" fn cq_release(this: *mut c_void) -> u32 {
+    let p = &*(this as *const CommandQueueXProxy);
+    let prev = p.refs.fetch_sub(1, Ordering::Release);
+    if prev == 1 {
+        std::sync::atomic::fence(Ordering::Acquire);
+        if !p.inner.is_null() {
+            let inner_vtbl = *(p.inner as *const *const *const c_void);
+            let rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(*inner_vtbl.add(2));
+            rel(p.inner);
+        }
+        drop(Box::from_raw(this as *mut CommandQueueXProxy));
+    }
+    prev - 1
+}
+
+pub unsafe fn wrap_command_queue(inner: *mut c_void) -> *mut c_void {
+    let mut vtbl = [xbox_slot_unimpl as *const c_void; 24];
+    vtbl[0] = cq_qi as *const c_void;
+    vtbl[1] = cq_add_ref as *const c_void;
+    vtbl[2] = cq_release as *const c_void;
+    vtbl[19] = PresentX as *const c_void;
+    vtbl[20] = WaitForOriginX as *const c_void;
+    let leaked = Box::leak(Box::new(vtbl));
+    Box::into_raw(Box::new(CommandQueueXProxy {
+        vtbl: leaked as *const [*const c_void; 24],
+        inner,
+        refs: AtomicU32::new(1),
+    })) as *mut c_void
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +850,42 @@ mod tests {
                 let dxbc = compile_hlsl_to_dxbc(&lifted, st).expect("d3dcompiler_47 DXBC compile");
                 assert!(dxbc.len() > 32 && &dxbc[0..4] == b"DXBC");
             }
+        }
+    }
+
+    #[test]
+    fn compiles_rdna2_to_sm66_dxil_and_presents_frames() {
+        if cfg!(windows) {
+            for st in [
+                rdna2_hlsl::ShaderStage::Vertex,
+                rdna2_hlsl::ShaderStage::Pixel,
+                rdna2_hlsl::ShaderStage::Compute,
+                rdna2_hlsl::ShaderStage::Mesh,
+                rdna2_hlsl::ShaderStage::RayTracing,
+            ] {
+                let mut prog = Vec::new();
+                prog.extend_from_slice(&((0x3Fu32 << 25) | (0u32 << 17) | (0x01u32 << 9) | 242u32).to_le_bytes()); // v_mov_b32 v0, 1.0
+                prog.extend_from_slice(&((0x3Eu32 << 26) | (12u32 << 4) | 0xFu32).to_le_bytes()); // exp pos0
+                prog.extend_from_slice(&0u32.to_le_bytes());
+                prog.extend_from_slice(&0xBF81_0000u32.to_le_bytes()); // s_endpgm
+                let (_, lifted) = translate_and_cache_rdna2(&prog, st);
+                let dxil = compile_hlsl_to_dxil(&lifted, st).expect("dxcompiler.dll SM 6.6 DXIL compile");
+                assert!(dxil.len() > 32 && &dxil[0..4] == b"DXBC");
+            }
+        }
+        unsafe {
+            let before = PercyGetPresentedFrameCount();
+            assert_eq!(PresentX(std::ptr::null_mut(), std::ptr::null(), std::ptr::null()), S_OK);
+            assert_eq!(WaitForOriginX(std::ptr::null_mut(), 0, 16667), S_OK);
+            let mut tok = 0u64;
+            assert_eq!(RegisterFrameEventX(std::ptr::null_mut(), 0, &mut tok), S_OK);
+            assert_eq!(tok, 1);
+            assert_eq!(PercyGetPresentedFrameCount(), before + 1);
+
+            let cq = wrap_command_queue(std::ptr::null_mut());
+            let cq_vtbl = &*(*(cq as *const *const [*const c_void; 24]));
+            let rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(cq_vtbl[2]);
+            assert_eq!(rel(cq), 0);
         }
     }
 }
