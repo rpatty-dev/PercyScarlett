@@ -244,9 +244,9 @@ fn probe_dxgi_and_d3d12_caps() -> (String, Result<String, String>) {
         // D3D12_FEATURE_SHADER_MODEL (7): query SM 6.6 (0x66)
         let mut sm: u32 = 0x66;
         let sm_ok = check_feat(dev, 7, &mut sm as *mut u32 as *mut c_void, 4) == 0;
-        // D3D12_FEATURE_D3D12_OPTIONS1 (18): WaveOps
+        // D3D12_FEATURE_D3D12_OPTIONS1 (8): WaveOps
         let mut opt1: Opt1 = std::mem::zeroed();
-        let w_ok = check_feat(dev, 18, &mut opt1 as *mut Opt1 as *mut c_void, std::mem::size_of::<Opt1>() as u32) == 0;
+        let w_ok = check_feat(dev, 8, &mut opt1 as *mut Opt1 as *mut c_void, std::mem::size_of::<Opt1>() as u32) == 0;
         // D3D12_FEATURE_D3D12_OPTIONS7 (32): MeshShaderTier
         let mut opt7: Opt7 = std::mem::zeroed();
         let m_ok = check_feat(dev, 32, &mut opt7 as *mut Opt7 as *mut c_void, std::mem::size_of::<Opt7>() as u32) == 0;
