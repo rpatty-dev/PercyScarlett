@@ -1,8 +1,26 @@
 use std::ffi::{c_void, CString};
-use std::sync::OnceLock;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 const E_FAIL: i32 = 0x8000_4005u32 as i32;
+#[allow(dead_code)]
 const E_NOTIMPL: i32 = 0x8000_4001u32 as i32;
+static LOG_LOCK: Mutex<()> = Mutex::new(());
+
+fn log_d3d12(msg: &str) {
+    let Ok(path) = std::env::var("PERCY_D3D12_LOG") else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    let _g = LOG_LOCK.lock();
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{msg}");
+    }
+}
 
 #[cfg(windows)]
 extern "system" {
@@ -224,6 +242,76 @@ pub unsafe extern "system" fn D3D12EnableExperimentalFeatures(
     }
 }
 
+#[repr(C)]
+struct DeviceXProxy {
+    vtbl: *const [*const c_void; 64],
+    inner: *mut c_void,
+    refs: AtomicU32,
+}
+
+unsafe extern "system" fn proxy_qi(
+    this: *mut c_void,
+    riid: *const c_void,
+    out: *mut *mut c_void,
+) -> i32 {
+    if out.is_null() {
+        return 0x8000_4003u32 as i32;
+    }
+    let p = &*(this as *const DeviceXProxy);
+    let inner_vtbl = *(p.inner as *const *const *const c_void);
+    let qi: unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> i32 =
+        std::mem::transmute(*inner_vtbl.add(0));
+    let mut raw_out: *mut c_void = std::ptr::null_mut();
+    let hr = qi(p.inner, riid, &mut raw_out);
+    if hr >= 0 && !raw_out.is_null() {
+        proxy_add_ref(this);
+        *out = this;
+    } else {
+        *out = std::ptr::null_mut();
+    }
+    hr
+}
+
+unsafe extern "system" fn proxy_add_ref(this: *mut c_void) -> u32 {
+    (*(this as *const DeviceXProxy)).refs.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+unsafe extern "system" fn proxy_release(this: *mut c_void) -> u32 {
+    let p = &*(this as *const DeviceXProxy);
+    let prev = p.refs.fetch_sub(1, Ordering::Release);
+    if prev == 1 {
+        std::sync::atomic::fence(Ordering::Acquire);
+        let inner_vtbl = *(p.inner as *const *const *const c_void);
+        let rel: unsafe extern "system" fn(*mut c_void) -> u32 =
+            std::mem::transmute(*inner_vtbl.add(2));
+        rel(p.inner);
+        drop(Box::from_raw(this as *mut DeviceXProxy));
+    }
+    prev - 1
+}
+
+unsafe extern "system" fn xbox_slot_unimpl() -> i32 {
+    log_d3d12("ID3D12DeviceX: unimplemented Xbox-only vtable slot called -> E_NOTIMPL");
+    E_NOTIMPL
+}
+
+unsafe fn wrap_device_pointer(inner: *mut c_void) -> *mut c_void {
+    if inner.is_null() {
+        return inner;
+    }
+    let mut vtbl = [xbox_slot_unimpl as *const c_void; 64];
+    vtbl[0] = proxy_qi as *const c_void;
+    vtbl[1] = proxy_add_ref as *const c_void;
+    vtbl[2] = proxy_release as *const c_void;
+    let leaked_vtbl = Box::leak(Box::new(vtbl));
+    let proxy = Box::new(DeviceXProxy {
+        vtbl: leaked_vtbl as *const [*const c_void; 64],
+        inner,
+        refs: AtomicU32::new(1),
+    });
+    Box::into_raw(proxy) as *mut c_void
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn D3D12XboxCreateDevice(
     adapter: *mut c_void,
@@ -235,7 +323,11 @@ pub unsafe extern "system" fn D3D12XboxCreateDevice(
         return 0x8000_4003u32 as i32; // E_POINTER
     }
     const D3D_FEATURE_LEVEL_12_0: u32 = 0xC000;
-    D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, riid, out_device)
+    let hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, riid, out_device);
+    if hr >= 0 && !(*out_device).is_null() && std::env::var("PERCY_D3D12_WRAP").ok().as_deref() == Some("1") {
+        *out_device = wrap_device_pointer(*out_device);
+    }
+    hr
 }
 
 #[cfg(test)]
@@ -251,6 +343,26 @@ mod tests {
                 assert_ne!(host_proc("D3D12SerializeRootSignature"), 0);
                 assert_ne!(host_proc("D3D12SerializeVersionedRootSignature"), 0);
             }
+        }
+    }
+
+    #[test]
+    fn device_x_proxy_wraps_and_releases_cleanly() {
+        unsafe extern "system" fn dummy_qi(_: *mut c_void, _: *const c_void, _: *mut *mut c_void) -> i32 { E_NOTIMPL }
+        unsafe extern "system" fn dummy_add(_: *mut c_void) -> u32 { 2 }
+        unsafe extern "system" fn dummy_rel(_: *mut c_void) -> u32 { 0 }
+        #[repr(C)]
+        struct DummyCom { vtbl: *const [*const c_void; 3] }
+
+        unsafe {
+            let vtbl = [dummy_qi as *const c_void, dummy_add as *const c_void, dummy_rel as *const c_void];
+            let mut inner = DummyCom { vtbl: &vtbl };
+            let proxy = wrap_device_pointer(&mut inner as *mut DummyCom as *mut c_void);
+            let p_vtbl = &*(*(proxy as *const *const [*const c_void; 64]));
+            let xbox_slot: unsafe extern "system" fn() -> i32 = std::mem::transmute(p_vtbl[50]);
+            assert_eq!(xbox_slot(), E_NOTIMPL);
+            let rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(p_vtbl[2]);
+            assert_eq!(rel(proxy), 0);
         }
     }
 }
