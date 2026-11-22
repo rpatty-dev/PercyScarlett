@@ -203,5 +203,5 @@ cargo test --workspace
 
 ## Legal Notice
 
-PercyScarlett is an independent, clean-room interoperability research project licensed under the [MIT License](LICENSE).
+PercyScarlett is an independent, clean-room interoperability research project licensed under the **[PercyLicense (Non-Commercial Attribution & Copyleft v1.2)](LICENSE)**.
 It contains no proprietary Xbox/Microsoft SDK headers, keys, or binaries, and does **not** decrypt, bypass, or strip retail DRM or encrypted `.xvc`/`.xvd` packages. Users must supply their own lawfully obtained, unencrypted executables.

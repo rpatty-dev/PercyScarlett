@@ -1,4 +1,5 @@
 mod gdk;
+mod gui;
 mod mascot;
 mod pe64;
 mod pe_loader;
@@ -136,9 +137,15 @@ fn main() {
         Some("mascot") => {
             mascot::print_mascot_banner();
         }
+        Some("gui") => {
+            if let Err(e) = gui::run_dashboard() {
+                eprintln!("GUI error: {e}");
+            }
+        }
         _ => {
             mascot::print_mascot_banner();
             println!("Usage:");
+            println!("  percyscarlett gui                 (Xbox Series X Dashboard UI)");
             println!("  percyscarlett inspect <game.exe>");
             println!("  percyscarlett plan <game_dir>");
             println!("  percyscarlett verify-dlls <game_dir>");

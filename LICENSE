@@ -1,21 +1,52 @@
-MIT License
+PercyLicense — PercyScarlett Non-Commercial Attribution & Copyleft License (v1.2)
+Copyright (c) 2026 @rpatty-dev (@rpatty). All rights reserved.
+Original Repository: https://github.com/rpatty-dev/PercyScarlett
 
-Copyright (c) 2026 rpatty-dev
+1. Permitted Uses
+   You are granted a non-exclusive, revocable, non-commercial license to:
+   (a) Download, compile, run, and use PercyScarlett for personal, research,
+       and community development purposes.
+   (b) Fork, modify, patch, create derivative works, submit pull requests,
+       and redistribute modified source code or compiled binaries, subject
+       to all conditions in Section 2 and restrictions in Section 3.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+2. Required Conditions (Share-Alike, Attribution & "Percy" Naming)
+   Any public fork, derivative work, modified source distribution, or
+   compiled binary MUST satisfy all of the following:
+   (a) Copyleft (Open-Source Share-Alike): Any modified version, fork, or
+       derivative work you distribute must remain open-source with full
+       corresponding source code publicly available under this exact same
+       license.
+   (b) Original Creator Credit: You must clearly credit @rpatty-dev (@rpatty)
+       as the original creator and founder of PercyScarlett in this LICENSE file
+       and in the repository README, including a link back to
+       https://github.com/rpatty-dev/PercyScarlett.
+   (c) "Percy" Name Requirement: You may choose your own fork or derivative
+       name (for example: Percy6Scarlett, PercyLayer, PercyXbox), provided
+       that the name "Percy" appears in the repository name and application
+       name throughout.
+   (d) Notice Preservation: You must keep this LICENSE file intact in every
+       copy, fork, or redistribution.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+3. Strict Non-Commercial & Anti-Profit Restrictions
+   No commercial use or profit of any kind may be made from PercyScarlett or
+   any derivative work. Without prior written permission from @rpatty-dev
+   (@rpatty), you may NOT:
+   (a) Sell, license, rent, or monetize PercyScarlett, any fork, or any binary.
+   (b) Place builds, forks, or features behind paywalls, paid Patreons,
+       paid memberships, subscriptions, or donation-gated access.
+   (c) Run advertisements, sponsorships, or crypto/token monetization tied
+       to PercyScarlett or any derivative work.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+4. Termination & Revocation
+   Your rights under this license terminate automatically if you violate
+   any term of Sections 2 or 3. @rpatty-dev (@rpatty) also reserves the
+   right to revoke this license for any fork or distributor that breaches
+   attribution, naming, share-alike, or non-commercial terms.
+
+5. Disclaimer of Warranty
+   THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+   IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+   LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.
