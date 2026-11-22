@@ -475,35 +475,20 @@ fn semibold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(SEMIBOLD.into()))
 }
 
-/// Read the first font file found in the user or system font folders.
-fn load_system_font(names: &[&str]) -> Option<Vec<u8>> {
-    let dirs: Vec<PathBuf> = [
-        std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(r"Microsoft\Windows\Fonts")),
-        std::env::var_os("WINDIR").map(|d| PathBuf::from(d).join("Fonts")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    names.iter().find_map(|n| dirs.iter().find_map(|d| fs::read(d.join(n)).ok()))
-}
-
-/// SF Pro Display is loaded from the installed fonts, never bundled (Apple licence);
-/// Segoe UI Variable / Segoe UI is the fallback on machines without it.
+/// PercyPRO is Inter Display (SIL OFL 1.1, see assets/fonts/OFL.txt), bundled so every PC renders the same.
 fn install_theme(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    let regular = load_system_font(&["SF-Pro-Display-Regular.otf", "SegUIVar.ttf", "segoeui.ttf"]);
-    let semi = load_system_font(&["SF-Pro-Display-Semibold.otf", "seguisb.ttf"]);
-    if let Some(r) = regular {
-        fonts.font_data.insert("ui".into(), Arc::new(egui::FontData::from_owned(r)));
-        fonts.families.get_mut(&FontFamily::Proportional).unwrap().insert(0, "ui".into());
+    for (name, bytes) in [
+        ("PercyPRO", &include_bytes!("../assets/fonts/PercyPRO-Regular.ttf")[..]),
+        ("PercyPRO-SemiBold", &include_bytes!("../assets/fonts/PercyPRO-SemiBold.ttf")[..]),
+    ] {
+        fonts.font_data.insert(name.into(), Arc::new(egui::FontData::from_static(bytes)));
     }
-    let mut semi_family = Vec::new();
-    if let Some(s) = semi {
-        fonts.font_data.insert("ui-semibold".into(), Arc::new(egui::FontData::from_owned(s)));
-        semi_family.push("ui-semibold".to_string());
-    }
-    semi_family.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
-    fonts.families.insert(FontFamily::Name(SEMIBOLD.into()), semi_family);
+    let prop = fonts.families.get_mut(&FontFamily::Proportional).unwrap();
+    prop.insert(0, "PercyPRO".into());
+    let mut semi = vec!["PercyPRO-SemiBold".to_string()];
+    semi.extend(prop.iter().cloned());
+    fonts.families.insert(FontFamily::Name(SEMIBOLD.into()), semi);
     ctx.set_fonts(fonts);
 
     let mut style = (*ctx.style()).clone();

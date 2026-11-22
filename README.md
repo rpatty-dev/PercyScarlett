@@ -205,3 +205,5 @@ cargo test --workspace
 
 PercyScarlett is an independent, clean-room interoperability research project licensed under the **[PercyLicense (Non-Commercial Attribution & Copyleft v1.2)](LICENSE)**.
 It contains no proprietary Xbox/Microsoft SDK headers, keys, or binaries, and does **not** decrypt, bypass, or strip retail DRM or encrypted `.xvc`/`.xvd` packages. Users must supply their own lawfully obtained, unencrypted executables.
+
+The Dashboard font **PercyPRO** is Inter Display 4.1 by The Inter Project Authors, renamed and bundled under the [SIL Open Font License 1.1](assets/fonts/OFL.txt). The PercyLicense does not apply to it.
