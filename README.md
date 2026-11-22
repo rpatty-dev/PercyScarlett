@@ -10,6 +10,8 @@ PercyScarlett is written 100% from scratch in pure Rust with zero third-party em
 
 ![PercyScarlett Live Subsystem Readiness](docs/status.svg)
 
+![PercyScarlett Per-Item Surface Coverage Map](docs/progress_grid.svg)
+
 ---
 
 ## Why PercyScarlett Leads Toward Codename G6 on PC

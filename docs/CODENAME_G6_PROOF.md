@@ -68,5 +68,6 @@ Scanning the 16 shipped DLLs and `MicrosoftGame.Config` in the Codename G6 build
 
 ### Day-1 Bring-Up Sequence
 1. Place the unencrypted Codename G6 `.exe` into the source build directory and run the non-destructive overlay mount (junctions for asset folders, hardlinks for root binaries).
-2. Run `percyscarlett inspect <MountDir>\<CodenameG6.exe>` to enumerate every exact GDK import ordinal and function name required by the executable.
-3. Drop the compiled PercyScarlett shim DLLs (`xmem.dll`, `d3d12_xs.dll`, `xgameruntime.dll`, etc.) into the mount directory so the Windows PE loader binds the `.exe` IAT directly to PercyScarlett without touching the original build files.
+2. Run `percyscarlett inspect <MountDir>\<CodenameG6.exe>` to enumerate every exact GDK import ordinal and function name required by the executable (including extended console audio/OS DLLs such as `chad.dll`, `xapu.dll`, `AcpHal.dll`, and `xcrdapi.dll`).
+3. Drop the compiled PercyScarlett shim DLLs (`xmem.dll`, `d3d12_xs.dll`, `xgameruntime.dll`, `winrt_xs.dll`, `dstorage.dll`, `GameInput.dll`) into the mount directory so the Windows PE loader binds the `.exe` IAT directly to PercyScarlett without touching the original build files.
+4. For graphics bring-up beyond initial device creation, prioritize `ID3D12DeviceX` / `PresentX`, RDNA2 Mesh/Amplification shader translation, and external root signature binding.

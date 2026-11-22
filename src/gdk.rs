@@ -11,15 +11,19 @@ pub struct ScarlettShimSpec {
 }
 
 pub const SHIM_SPECS: &[ScarlettShimSpec] = &[
-    ScarlettShimSpec { dll: "xmem.dll", area: "Memory", role: "XMemAlloc, XMemFree, XMemVirtualQuery, working set stats", status: "Prototype (xmem.rs)" },
+    ScarlettShimSpec { dll: "xmem.dll", area: "Memory", role: "XMemAlloc*, XMemFree*, XMemVirtualQuery, working set stats", status: "Live-DLL Verified (crates/xmem)" },
     ScarlettShimSpec { dll: "kernelx.dll", area: "Memory/OS", role: "XMemAllocPhysical, 64K/4M aliasing, title memory", status: "Prototype (xmem.rs)" },
-    ScarlettShimSpec { dll: "d3d12_xs.dll", area: "Graphics", role: "ID3D12DeviceX, CommandListX, PresentX, DispatchMesh", status: "Planned" },
+    ScarlettShimSpec { dll: "d3d12_xs.dll", area: "Graphics", role: "D3D12CreateDevice, root sig proxy, ID3D12DeviceX, PresentX", status: "Live-DLL Verified (crates/d3d12_xs)" },
     ScarlettShimSpec { dll: "xg_xs.dll", area: "Graphics", role: "Scarlett texture/buffer tile swizzle & layout", status: "Paired w/ PercyStar tex.rs" },
-    ScarlettShimSpec { dll: "xgameruntime.dll", area: "GDK", role: "QueryApiImpl, XTaskQueue, XAsync, XUser, XGameSave", status: "Planned" },
-    ScarlettShimSpec { dll: "dstorage.dll", area: "IO", role: "DirectStorage queue + GDeflate / BCPack decompression", status: "Planned" },
-    ScarlettShimSpec { dll: "XAudio2_9.dll", area: "Audio", role: "XAudio2 + XMA2 / Opus voice playback", status: "Planned" },
-    ScarlettShimSpec { dll: "GameInput.dll", area: "Input", role: "XInput + keyboard/mouse translation", status: "Planned" },
-    ScarlettShimSpec { dll: "winrt_xs.dll", area: "Runtime", role: "WinRT RoInitialize / HSTRING / Xbox factories", status: "Planned" },
+    ScarlettShimSpec { dll: "xgameruntime.dll", area: "GDK", role: "XTaskQueue, XAsync, XUserGetId, XGameSave", status: "Live-DLL Verified (crates/xgameruntime)" },
+    ScarlettShimSpec { dll: "dstorage.dll", area: "IO", role: "DirectStorage configuration & factory shim", status: "Live-DLL Verified (crates/dstorage)" },
+    ScarlettShimSpec { dll: "XAudio2_9.dll", area: "Audio", role: "XAudio2 + XMA2 / Opus voice playback", status: "Host System32 Verified" },
+    ScarlettShimSpec { dll: "GameInput.dll", area: "Input", role: "GameInputCreate controller/input shim", status: "Live-DLL Verified (crates/gameinput)" },
+    ScarlettShimSpec { dll: "winrt_xs.dll", area: "Runtime", role: "WinRT RoInitialize / HSTRING / activation factories", status: "Live-DLL Verified (crates/winrt_xs)" },
+    ScarlettShimSpec { dll: "chad.dll", area: "Audio", role: "XDsp* hardware DSP audio processing", status: "Planned (stubgen-ready)" },
+    ScarlettShimSpec { dll: "xapu.dll", area: "Audio", role: "XApu* audio processing unit runtime", status: "Planned (stubgen-ready)" },
+    ScarlettShimSpec { dll: "AcpHal.dll", area: "Audio", role: "Audio Command Processor HAL", status: "Planned (stubgen-ready)" },
+    ScarlettShimSpec { dll: "xcrdapi.dll", area: "Storage", role: "Xbox content / package runtime API", status: "Planned (stubgen-ready)" },
 ];
 
 pub fn summarize_bringup(pe: &Pe64Summary) -> String {
