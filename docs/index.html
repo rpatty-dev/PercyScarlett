@@ -69,6 +69,18 @@
     }
     .stat .num { font-size: 1.9rem; font-weight: 800; color: var(--green); }
     .stat .lbl { color: var(--muted); font-size: 0.9rem; }
+    .countdown-box {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px;
+      background: linear-gradient(135deg, rgba(16, 124, 16, 0.22), rgba(19, 23, 34, 0.95));
+      border: 1px solid rgba(82, 196, 64, 0.45); border-radius: 14px;
+      padding: 18px 24px; margin-bottom: 24px;
+    }
+    .countdown-title { font-size: 1.1rem; font-weight: 700; color: var(--text); }
+    .countdown-sub { font-size: 0.85rem; color: var(--muted); }
+    .countdown-timer {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 1.85rem; font-weight: 800; color: var(--green); letter-spacing: 0.04em;
+    }
     section {
       background: var(--card); border: 1px solid var(--border); border-radius: 14px;
       padding: 24px; margin-bottom: 24px;
@@ -106,6 +118,14 @@
         </div>
       </div>
     </header>
+
+    <div class="countdown-box" id="exe-drop">
+      <div>
+        <div class="countdown-title">EXE Drop Countdown</div>
+        <div class="countdown-sub">Target: 5:00 PM GMT (17:00 UTC)</div>
+      </div>
+      <div class="countdown-timer" id="exe-countdown">--:--:--</div>
+    </div>
 
     <div class="stats">
       <div class="stat">
@@ -216,7 +236,7 @@ Launched target\release\scarlett_sample.exe with PercyScarlett overlay (PID 1525
     </section>
 
     <section>
-      <h2>Proof 3 — Shipped Xbox Sidecar DLLs &amp; 17/17 Workspace Tests</h2>
+      <h2>Proof 3 — Shipped Xbox Sidecar DLLs &amp; 22/22 Workspace Tests</h2>
       <pre>[PASS] amd_fidelityfx_loader_xbox.dll loaded at 0x7ffd2e170000
 [PASS] amd_fidelityfx_upscaler_xbox.dll loaded at 0x7ffcdf570000
 [PASS] Bink2Scarlett.dll loaded at 0x7ffcdf5f0000
@@ -231,5 +251,26 @@ DLL verification: 6 passed, 0 failed</pre>
       PercyScarlett · Clean-room PercyLicense v1.2 interoperability research · No game files, keys, or proprietary SDKs hosted.
     </footer>
   </div>
+  <script>
+    (function () {
+      var target = Date.UTC(2026, 10, 23, 17, 0, 0); // 5:00 PM GMT
+      var el = document.getElementById('exe-countdown');
+      function pad(n) { return n < 10 ? '0' + n : '' + n; }
+      function tick() {
+        var diff = target - Date.now();
+        if (diff <= 0) {
+          el.textContent = 'DROPPING NOW';
+          return;
+        }
+        var totalSec = Math.floor(diff / 1000);
+        var h = Math.floor(totalSec / 3600);
+        var m = Math.floor((totalSec % 3600) / 60);
+        var s = totalSec % 60;
+        el.textContent = pad(h) + ':' + pad(m) + ':' + pad(s);
+      }
+      tick();
+      setInterval(tick, 1000);
+    })();
+  </script>
 </body>
 </html>
