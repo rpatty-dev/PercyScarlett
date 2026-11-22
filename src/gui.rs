@@ -843,11 +843,41 @@ impl eframe::App for DashboardApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(BLACK).inner_margin(egui::Margin::symmetric(28, 24)))
             .show(ctx, |ui| {
-                // Fade the page in on tab switch.
-                let shown = ctx.animate_value_with_time(egui::Id::new("tab_fade"), self.tab_switches, 0.22);
-                ui.set_opacity(1.0 - (self.tab_switches - shown).clamp(0.0, 1.0) * 0.9);
+                let (rt_have, rt_total, rt_dir) = self.runtime_count.lock().unwrap().clone();
+                let runtime_ready = rt_have >= rt_total;
+                if !runtime_ready {
+                    card().corner_radius(18.0_f32).inner_margin(32.0).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new("First-Time Setup Required").font(semibold(30.0)).color(WHITE));
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Runtime DLLs not installed yet ({rt_have}/{rt_total} found in {}).\nDownload the runtime suite & add PercyScarlett to your Start Menu to unlock the dashboard.",
+                                        rt_dir.display()
+                                    ))
+                                    .size(13.5)
+                                    .color(DIM),
+                                );
+                                ui.add_space(16.0);
+                                if ui.add_enabled(!is_busy, primary("Download runtime & add to Start Menu")).clicked() {
+                                    self.install_runtime(ctx);
+                                }
+                            });
+                            if let Some(tex) = &self.mascot_tex {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.image((tex.id(), Vec2::splat(112.0)));
+                                });
+                            }
+                        });
+                    });
+                } else {
+                    // Fade the page in on tab switch.
+                    let shown = ctx.animate_value_with_time(egui::Id::new("tab_fade"), self.tab_switches, 0.22);
+                    ui.set_opacity(1.0 - (self.tab_switches - shown).clamp(0.0, 1.0) * 0.9);
 
-                match self.tab {
+                    match self.tab {
                     DashTab::Home => self.home(ui, ctx, is_busy),
                     DashTab::Shims => {
                         ui.label(RichText::new("Shims").font(semibold(28.0)).color(WHITE));
@@ -925,6 +955,7 @@ impl eframe::App for DashboardApp {
                                 }
                             });
                         });
+                    }
                     }
                 }
 
