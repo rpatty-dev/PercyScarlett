@@ -59,8 +59,16 @@ struct XUserHandle {
 const XUSER_MAGIC: u32 = 0x5053_5855; // "PSXU"
 
 #[no_mangle]
+pub unsafe extern "system" fn XGameRuntimeInitialize() -> i32 {
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XGameRuntimeUninitialize() {}
+
+#[no_mangle]
 pub unsafe extern "system" fn XSystemGetDeviceType() -> u32 {
-    4 // XSystemDeviceType::XboxScarlettLockhart/Anaconda (Series X|S)
+    7 // XSystemDeviceType::XboxScarlettAnaconda (Xbox Series X; Lockhart=6, XboxOneX=4)
 }
 
 #[no_mangle]
@@ -408,7 +416,7 @@ mod tests {
     #[test]
     fn task_queue_and_xuser_work() {
         unsafe {
-            assert_eq!(XSystemGetDeviceType(), 4);
+            assert_eq!(XSystemGetDeviceType(), 7);
             let mut q: *mut c_void = std::ptr::null_mut();
             assert_eq!(XTaskQueueCreate(0, 0, &mut q), S_OK);
             assert!(!q.is_null());

@@ -568,7 +568,7 @@ pub unsafe extern "system" fn D3D12EnableExperimentalFeatures(
 
 #[repr(C)]
 struct DeviceXProxy {
-    vtbl: *const [*const c_void; 64],
+    vtbl: *const [*const c_void; 128],
     inner: *mut c_void,
     refs: AtomicU32,
 }
@@ -588,12 +588,40 @@ unsafe extern "system" fn proxy_qi(
     let mut raw_out: *mut c_void = std::ptr::null_mut();
     let hr = qi(p.inner, riid, &mut raw_out);
     if hr >= 0 && !raw_out.is_null() {
+        // Release the extra ref from inner QI because proxy holds one ref to inner.
+        let rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(*inner_vtbl.add(2));
+        rel(raw_out);
         proxy_add_ref(this);
         *out = this;
+        0
+    } else if hr == 0x8000_4002u32 as i32 {
+        const IID_IDXGIDEVICE: [u8; 16] = [
+            0xfa, 0x77, 0xec, 0x54, 0x77, 0x13, 0xe6, 0x44, 0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c,
+        ];
+        const IID_IDXGIDEVICE1: [u8; 16] = [
+            0x0f, 0x97, 0xdb, 0x77, 0x76, 0x62, 0xba, 0x48, 0xba, 0x28, 0x07, 0x01, 0x43, 0xb4, 0x39, 0x2c,
+        ];
+        const IID_IDXGIDEVICE2: [u8; 16] = [
+            0x05, 0x5c, 0x00, 0x05, 0xe3, 0x2d, 0x57, 0x4e, 0xa8, 0x05, 0x5a, 0x0e, 0x4d, 0x21, 0x3f, 0x74,
+        ];
+        if !riid.is_null() {
+            let g = *(riid as *const [u8; 16]);
+            if std::env::var("PERCY_TRACE").is_ok() {
+                eprintln!("[d3d12_xs] proxy_qi E_NOINTERFACE riid={:02x?}", g);
+            }
+            if g == IID_IDXGIDEVICE || g == IID_IDXGIDEVICE1 || g == IID_IDXGIDEVICE2 {
+                *out = create_dxgi_device_proxy();
+                return 0;
+            }
+        }
+        // Xbox titles often QI for Scarlett-specific ID3D12DeviceX / ID3D12Device* IIDs; return our proxy.
+        proxy_add_ref(this);
+        *out = this;
+        0
     } else {
         *out = std::ptr::null_mut();
+        hr
     }
-    hr
 }
 
 unsafe extern "system" fn proxy_add_ref(this: *mut c_void) -> u32 {
@@ -615,25 +643,162 @@ unsafe extern "system" fn proxy_release(this: *mut c_void) -> u32 {
 }
 
 unsafe extern "system" fn xbox_slot_unimpl() -> i32 {
-    log_d3d12("ID3D12DeviceX: unimplemented Xbox-only vtable slot called -> E_NOTIMPL");
-    E_NOTIMPL
+    log_d3d12("ID3D12DeviceX: Xbox-only vtable slot called -> S_OK");
+    0
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+macro_rules! device_fwd_slot {
+    ($name:ident, $slot:literal) => {
+        #[unsafe(naked)]
+        unsafe extern "system" fn $name() {
+            std::arch::naked_asm!(
+                "mov rcx, qword ptr [rcx + 8]",
+                "mov rax, qword ptr [rcx]",
+                concat!("jmp qword ptr [rax + ", stringify!($slot), " * 8]"),
+            );
+        }
+    };
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+mod dev_fwd {
+    use super::*;
+    device_fwd_slot!(s3, 3);
+    device_fwd_slot!(s4, 4);
+    device_fwd_slot!(s5, 5);
+    device_fwd_slot!(s6, 6);
+    device_fwd_slot!(s7, 7);
+    device_fwd_slot!(s8, 8);
+    device_fwd_slot!(s9, 9);
+    device_fwd_slot!(s10, 10);
+    device_fwd_slot!(s11, 11);
+    device_fwd_slot!(s12, 12);
+    device_fwd_slot!(s13, 13);
+    device_fwd_slot!(s14, 14);
+    device_fwd_slot!(s15, 15);
+    device_fwd_slot!(s16, 16);
+    device_fwd_slot!(s17, 17);
+    device_fwd_slot!(s18, 18);
+    device_fwd_slot!(s19, 19);
+    device_fwd_slot!(s20, 20);
+    device_fwd_slot!(s21, 21);
+    device_fwd_slot!(s22, 22);
+    device_fwd_slot!(s23, 23);
+    device_fwd_slot!(s24, 24);
+    device_fwd_slot!(s25, 25);
+    device_fwd_slot!(s26, 26);
+    device_fwd_slot!(s27, 27);
+    device_fwd_slot!(s28, 28);
+    device_fwd_slot!(s29, 29);
+    device_fwd_slot!(s30, 30);
+    device_fwd_slot!(s31, 31);
+    device_fwd_slot!(s32, 32);
+    device_fwd_slot!(s33, 33);
+    device_fwd_slot!(s34, 34);
+    device_fwd_slot!(s35, 35);
+    device_fwd_slot!(s36, 36);
+    device_fwd_slot!(s37, 37);
+    device_fwd_slot!(s38, 38);
+    device_fwd_slot!(s39, 39);
+    device_fwd_slot!(s40, 40);
+    device_fwd_slot!(s41, 41);
+    device_fwd_slot!(s42, 42);
+    device_fwd_slot!(s43, 43);
+    pub const SLOTS: [*const c_void; 41] = [
+        s3 as *const c_void, s4 as *const c_void, s5 as *const c_void, s6 as *const c_void,
+        s7 as *const c_void, s8 as *const c_void, s9 as *const c_void, s10 as *const c_void,
+        s11 as *const c_void, s12 as *const c_void, s13 as *const c_void, s14 as *const c_void,
+        s15 as *const c_void, s16 as *const c_void, s17 as *const c_void, s18 as *const c_void,
+        s19 as *const c_void, s20 as *const c_void, s21 as *const c_void, s22 as *const c_void,
+        s23 as *const c_void, s24 as *const c_void, s25 as *const c_void, s26 as *const c_void,
+        s27 as *const c_void, s28 as *const c_void, s29 as *const c_void, s30 as *const c_void,
+        s31 as *const c_void, s32 as *const c_void, s33 as *const c_void, s34 as *const c_void,
+        s35 as *const c_void, s36 as *const c_void, s37 as *const c_void, s38 as *const c_void,
+        s39 as *const c_void, s40 as *const c_void, s41 as *const c_void, s42 as *const c_void,
+        s43 as *const c_void,
+    ];
 }
 
 unsafe fn wrap_device_pointer(inner: *mut c_void) -> *mut c_void {
     if inner.is_null() {
         return inner;
     }
-    let mut vtbl = [xbox_slot_unimpl as *const c_void; 64];
+    let mut vtbl = [xbox_slot_unimpl as *const c_void; 128];
     vtbl[0] = proxy_qi as *const c_void;
     vtbl[1] = proxy_add_ref as *const c_void;
     vtbl[2] = proxy_release as *const c_void;
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        vtbl[3..44].copy_from_slice(&dev_fwd::SLOTS);
+    }
     let leaked_vtbl = Box::leak(Box::new(vtbl));
     let proxy = Box::new(DeviceXProxy {
-        vtbl: leaked_vtbl as *const [*const c_void; 64],
+        vtbl: leaked_vtbl as *const [*const c_void; 128],
         inner,
         refs: AtomicU32::new(1),
     });
     Box::into_raw(proxy) as *mut c_void
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct DxgiDeviceProxy {
+    vtbl: *const [*const c_void; 16],
+    refs: AtomicU32,
+}
+
+unsafe extern "system" fn dxgi_qi(this: *mut c_void, _riid: *const c_void, out: *mut *mut c_void) -> i32 {
+    if out.is_null() {
+        return 0x8000_4003u32 as i32;
+    }
+    dxgi_add_ref(this);
+    *out = this;
+    0
+}
+
+unsafe extern "system" fn dxgi_add_ref(this: *mut c_void) -> u32 {
+    (*(this as *const DxgiDeviceProxy)).refs.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+unsafe extern "system" fn dxgi_release(this: *mut c_void) -> u32 {
+    let p = &*(this as *const DxgiDeviceProxy);
+    let prev = p.refs.fetch_sub(1, Ordering::Release);
+    if prev == 1 {
+        std::sync::atomic::fence(Ordering::Acquire);
+        drop(Box::from_raw(this as *mut DxgiDeviceProxy));
+    }
+    prev - 1
+}
+
+unsafe extern "system" fn dxgi_get_adapter(_this: *mut c_void, out_adapter: *mut *mut c_void) -> i32 {
+    if out_adapter.is_null() {
+        return 0x8000_4003u32 as i32;
+    }
+    #[cfg(windows)]
+    {
+        let ad = pick_high_perf_adapter();
+        *out_adapter = ad;
+        if ad.is_null() { E_FAIL } else { 0 }
+    }
+    #[cfg(not(windows))]
+    {
+        *out_adapter = std::ptr::null_mut();
+        E_NOTIMPL
+    }
+}
+
+unsafe fn create_dxgi_device_proxy() -> *mut c_void {
+    let mut vtbl = [xbox_slot_unimpl as *const c_void; 16];
+    vtbl[0] = dxgi_qi as *const c_void;
+    vtbl[1] = dxgi_add_ref as *const c_void;
+    vtbl[2] = dxgi_release as *const c_void;
+    vtbl[7] = dxgi_get_adapter as *const c_void;
+    let leaked_vtbl = Box::leak(Box::new(vtbl));
+    Box::into_raw(Box::new(DxgiDeviceProxy {
+        vtbl: leaked_vtbl as *const [*const c_void; 16],
+        refs: AtomicU32::new(1),
+    })) as *mut c_void
 }
 
 #[cfg(windows)]
@@ -715,15 +880,27 @@ pub unsafe extern "system" fn D3D12XboxCreateDevice(
     let chosen = if adapter.is_null() { pick_high_perf_adapter() } else { adapter };
     #[cfg(not(windows))]
     let chosen = adapter;
-    let hr = D3D12CreateDevice(chosen, D3D_FEATURE_LEVEL_12_0, riid, out_device);
+    let mut hr = D3D12CreateDevice(chosen, D3D_FEATURE_LEVEL_12_0, riid, out_device);
+    let mut forced_wrap = false;
+    if hr < 0 {
+        // Xbox titles often pass a Scarlett-specific ID3D12DeviceX IID; fall back to PC ID3D12Device and wrap.
+        const IID_ID3D12_DEVICE: [u8; 16] = [
+            0xf1, 0x19, 0x98, 0x18, 0xb6, 0x1d, 0x57, 0x4b, 0xbe, 0x54, 0x18, 0x21, 0x33, 0x9b, 0x85, 0xf7,
+        ];
+        hr = D3D12CreateDevice(chosen, D3D_FEATURE_LEVEL_12_0, IID_ID3D12_DEVICE.as_ptr() as *const c_void, out_device);
+        forced_wrap = true;
+    }
     #[cfg(windows)]
     if adapter.is_null() && !chosen.is_null() {
         let ad_vtbl = &*(*(chosen as *const *const [*const c_void; 12]));
         let ad_rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(ad_vtbl[2]);
         ad_rel(chosen);
     }
-    if hr >= 0 && !(*out_device).is_null() && std::env::var("PERCY_D3D12_WRAP").ok().as_deref() == Some("1") {
+    if hr >= 0 && !(*out_device).is_null() {
         *out_device = wrap_device_pointer(*out_device);
+    }
+    if std::env::var("PERCY_TRACE").is_ok() {
+        eprintln!("[d3d12_xs] D3D12XboxCreateDevice -> hr=0x{hr:08x} forced_wrap={forced_wrap}");
     }
     hr
 }
@@ -1093,7 +1270,7 @@ mod tests {
             let proxy = wrap_device_pointer(&mut inner as *mut DummyCom as *mut c_void);
             let p_vtbl = &*(*(proxy as *const *const [*const c_void; 64]));
             let xbox_slot: unsafe extern "system" fn() -> i32 = std::mem::transmute(p_vtbl[50]);
-            assert_eq!(xbox_slot(), E_NOTIMPL);
+            assert_eq!(xbox_slot(), 0);
             let rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(p_vtbl[2]);
             assert_eq!(rel(proxy), 0);
         }

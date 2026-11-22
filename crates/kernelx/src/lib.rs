@@ -76,6 +76,36 @@ pub unsafe extern "system" fn SetThreadName(_thread: usize, _name: *const u16) -
 }
 
 #[no_mangle]
+pub unsafe extern "system" fn RegisterAppStateChangeNotification(
+    _routine: *const c_void,
+    _context: *const c_void,
+    out_handle: *mut usize,
+) -> i32 {
+    if !out_handle.is_null() {
+        *out_handle = 0x5045_5243;
+    }
+    0 // S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn UnregisterAppStateChangeNotification(_handle: usize) {}
+
+#[no_mangle]
+pub unsafe extern "system" fn RegisterAppConstrainedChangeNotification(
+    _routine: *const c_void,
+    _context: *const c_void,
+    out_handle: *mut usize,
+) -> i32 {
+    if !out_handle.is_null() {
+        *out_handle = 0x5045_5244;
+    }
+    0 // S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn UnregisterAppConstrainedChangeNotification(_handle: usize) {}
+
+#[no_mangle]
 pub unsafe extern "system" fn XMemGetAuxiliaryTitleMemory(
     size: usize,
     _flags: u64,

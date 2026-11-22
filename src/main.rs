@@ -5,6 +5,7 @@ mod pe64;
 mod pe_loader;
 mod self_test;
 mod shader_bench;
+mod tray;
 mod xmem;
 
 use std::collections::{HashMap, HashSet};
@@ -182,6 +183,11 @@ fn main() {
         Some("mascot") => {
             mascot::print_mascot_banner();
         }
+        Some("-headless") | Some("--headless") => {
+            if let Err(e) = tray::run_tray_headless() {
+                eprintln!("Tray error: {e}");
+            }
+        }
         None | Some("gui") => {
             #[cfg(windows)]
             {
@@ -203,6 +209,7 @@ fn main() {
             println!("Usage:");
             println!("  percyscarlett                     (Launch Xbox Series X Dashboard UI)");
             println!("  percyscarlett gui                 (Launch Xbox Series X Dashboard UI)");
+            println!("  percyscarlett -headless           (Run silently in Windows System Tray)");
             println!("  percyscarlett inspect <game.exe>");
             println!("  percyscarlett plan <game_dir>");
             println!("  percyscarlett verify-dlls <game_dir>");

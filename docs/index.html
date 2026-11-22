@@ -4,14 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PercyScarlett — Clean-Room Xbox Series (Scarlett) Compatibility Layer</title>
-  <meta name="description" content="Pure-Rust Xbox Series X|S (Scarlett) translation layer: 21,522/21,522 (100.0%) SM 6.6 DXIL shaders, 9 cdylib shims, 6/6 sidecar DLLs live-loaded on Windows 11, 0 GB overlay mount." />
+  <meta name="description" content="Pure-Rust Xbox Series X|S (Scarlett) translation layer: 6/6 unmodified Scarlett GDKX samples booted, hardware GPU compute reference verified, 97.8% strict SM 6.6 DXIL (489/500), 27/27 workspace tests passing." />
   <meta name="theme-color" content="#52c440" />
 
   <!-- OpenGraph / Discord -->
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="PercyScarlett" />
-  <meta property="og:title" content="PercyScarlett — 100.0% SM 6.6 DXIL &amp; Clean-Room Scarlett Layer" />
-  <meta property="og:description" content="21,522/21,522 (100.0%, fail=0) TheBig6 RDNA2 shaders compiled to SM 6.6 DXIL via dxcompiler.dll. 9 Rust cdylib shims, 22/22 tests passing, 6/6 sidecar DLLs live-loaded on Windows 11, 0 GB overlay mount." />
+  <meta property="og:title" content="PercyScarlett — 6/6 Scarlett GDKX Samples &amp; Hardware-Verified RDNA2->DXIL" />
+  <meta property="og:description" content="6/6 unmodified Scarlett GDKX samples booted, 2 hardware GPU compute reference tests bit-exact, 489/500 (97.8%) strict SM 6.6 DXIL, 27/27 workspace tests passing." />
   <meta property="og:url" content="https://rpatty-dev.github.io/PercyScarlett/" />
   <meta property="og:image" content="https://rpatty-dev.github.io/PercyScarlett/social.png" />
   <meta property="og:image:width" content="1200" />
@@ -19,8 +19,8 @@
 
   <!-- Twitter / X -->
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="PercyScarlett — 100.0% SM 6.6 DXIL &amp; Clean-Room Scarlett Layer" />
-  <meta name="twitter:description" content="21,522/21,522 (100.0%, fail=0) RDNA2->SM 6.6 DXIL, 9 Rust cdylib shims, 6/6 sidecar DLLs live-loaded on Win11, 22/22 tests passing." />
+  <meta name="twitter:title" content="PercyScarlett — 6/6 Scarlett GDKX Samples &amp; Hardware-Verified RDNA2->DXIL" />
+  <meta name="twitter:description" content="6/6 unmodified Scarlett GDKX samples booted, hardware GPU compute verified, 489/500 (97.8%) strict SM 6.6 DXIL, 27/27 tests passing." />
   <meta name="twitter:image" content="https://rpatty-dev.github.io/PercyScarlett/social.png" />
 
   <link rel="icon" type="image/png" href="mascot.png" />
@@ -171,14 +171,14 @@
           </tr>
           <tr>
             <td><strong>Hardware GPU Bring-Up</strong></td>
-            <td class="win">Real ID3D12Device + CommandQueueX + 60-frame DXGI PresentX (RTX 2060 SUPER)</td>
+            <td class="win">6/6 unmodified Scarlett GDKX samples booted + D3D12 compute reference tests bit-exact</td>
             <td>60-frame Vulkan test; d3d12_xs command list &amp; descriptors still TODO</td>
             <td>Boots Minecraft / XDefiant / Fortnite</td>
             <td>Partial</td>
           </tr>
           <tr>
             <td><strong>TheBig6 😉 RDNA2 Shaders</strong></td>
-            <td class="win">21,522 / 21,522 (100.0%) SM 6.6 DXIL (VS/PS/CS/13,588 Mesh/64 RT)</td>
+            <td class="win">Strict (fails on unknown): 489/500 (97.8%) DXIL; 3,060/21,522 full corpus (VS 1,345 / PS 8,710 / CS 3,905 / Mesh 7,498 / RT 64)</td>
             <td>26,503 SPIR-V (spirv-val + 30-GPU test)</td>
             <td>Xbox One/Series runtime</td>
             <td>24,064 HLSL / ~35% VS</td>
@@ -209,31 +209,28 @@
     </section>
 
     <section>
-      <h2>Proof 1 — Full 21,522-Shader SM 6.6 DXIL Benchmark (<code>dxcompiler.dll</code>)</h2>
-      <p>Every shader in <code>shaders.rpf</code> (<code>PS09</code>) lifted from RDNA2 (GFX10.3) ISA to HLSL (with <code>PerDrawCB</code>, <code>g_tex[8]</code>, <code>g_samp[4]</code>, <code>MIMG</code>, <code>SMEM</code>, <code>LDS</code>, and Mesh/RT exports) and compiled live via <code>IDxcCompiler3::Compile</code>:</p>
-      <pre>PS09 Shaders: total=21522, benchmarked=21522, lifted=21522/21522 (100.0%) in 29.27s
-Stages: VS=89 PS=7730 CS=51 Mesh=13588 RT=64
-DXIL SM 6.6 (dxcompiler.dll): ok=21522/21522 (100.0%), fail=0</pre>
+      <h2>Proof 1 — Strict RDNA2 → SM 6.6 DXIL &amp; Hardware GPU Compute Reference</h2>
+      <p>Zero silent fallbacks: <code>lift_to_hlsl_strict</code> fails on any unrecognized instruction. Real RDNA2 compute programs (ALU + <code>s_cbranch_scc1</code> loops) compile to SM 6.6 DXIL via <code>dxcompiler.dll</code>, dispatch on real D3D12 GPU hardware (<code>compute_exec.rs</code>), and match CPU reference bit-for-bit:</p>
+      <pre>PS09 Shaders (full corpus): total=21522, strict_lifted=3060/21522 (14.2%) in 13.55s
+Stages: VS=1345 PS=8710 CS=3905 Mesh=7498 RT=64
+DXIL SM 6.6 (dxcompiler.dll, --limit 500): ok=489/500 (97.8%), fail=11
+test compute_exec::tests::executes_lifted_rdna2_compute_shader_on_hardware_gpu_and_matches_reference ... ok
+test compute_exec::tests::executes_rdna2_loop_with_sopp_branch_on_hardware_gpu ... ok</pre>
     </section>
 
     <section>
-      <h2>Proof 2 — Live Hardware GDK Sample Execution (<code>samples/scarlett_sample.rs</code>)</h2>
-      <p>Clean-room GDK sample launched via <code>percyscarlett launch</code> on Windows 11 x64, creating a real hardware <code>ID3D12Device</code> + <code>ID3D12CommandQueue</code> + Win32 <code>HWND</code> + <code>IDXGISwapChain1</code>, compiling RDNA2 VS/PS to SM 6.6 DXIL live, initializing <code>XAudio2Create</code>, and presenting 10 DXGI frames via <code>PresentX</code>:</p>
-      <pre>[ScarlettSample] XSystemGetDeviceType = 4
-[ScarlettSample] XAudio2Create OK (0x1f29576c3e0)
-[ScarlettSample] D3D12XboxCreateDevice OK (0x1f2957ecd00)
-[ScarlettSample] ID3D12CommandQueue created (0x1f2979be090)
-[ScarlettSample] Auto-HWND + IDXGISwapChain1 created!
-[ScarlettSample] RDNA2->VS_6_6 DXIL compiled (7136 bytes)
-[ScarlettSample] RDNA2->PS_6_6 DXIL compiled (4596 bytes)
-[ScarlettSample] RDNA2->CS_6_6 DXIL compiled
-[ScarlettSample] RDNA2->MS_6_6 DXIL compiled
-[ScarlettSample] Presented 60 real DXGI frames via PresentX!
-Launched target\release\scarlett_sample.exe with PercyScarlett overlay</pre>
+      <h2>Proof 2 — 6/6 Unmodified Scarlett GDKX Samples Booted via <code>percyscarlett run</code></h2>
+      <p>Unmodified Microsoft Scarlett GDKX sample executables mapped in-process via <code>percyscarlett run</code> (with <code>DeviceXProxy</code> x64 vtable forwarders, <code>DxgiDeviceProxy</code>, <code>XSystemGetDeviceType() = 7</code> Xbox Series X, and <code>XGameRuntimeInitialize</code>), entering live render loops on Windows 11:</p>
+      <pre>SimpleCompute_GDKX.exe: BOOTED &amp; RUNNING
+SimpleTriangle_GDKX.exe: BOOTED &amp; RUNNING
+SimpleLighting_GDKX.exe: BOOTED &amp; RUNNING
+SimpleTexture_GDKX.exe: BOOTED &amp; RUNNING
+SimpleBezier_GDKX.exe: BOOTED &amp; RUNNING
+SimpleInstancing_GDKX.exe: BOOTED &amp; RUNNING</pre>
     </section>
 
     <section>
-      <h2>Proof 3 — Shipped Xbox Sidecar DLLs, 8/8 Hardware Self-Test &amp; 24/24 Workspace Tests</h2>
+      <h2>Proof 3 — Shipped Xbox Sidecar DLLs, System Tray (<code>-headless</code>) &amp; 27/27 Workspace Tests</h2>
       <pre>[PASS] amd_fidelityfx_loader_xbox.dll loaded at 0x7ffd2e170000
 [PASS] amd_fidelityfx_upscaler_xbox.dll loaded at 0x7ffcdf570000
 [PASS] Bink2Scarlett.dll loaded at 0x7ffcdf5f0000

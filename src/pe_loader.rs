@@ -10,6 +10,33 @@ extern "system" {
     fn GetProcAddress(module: usize, name: *const i8) -> usize;
     fn RtlAddFunctionTable(function_table: *const c_void, entry_count: u32, base_address: u64) -> u8;
     fn RtlPcToFileHeader(pc_value: *const c_void, base_of_image: *mut *mut c_void) -> *mut c_void;
+    fn AddVectoredExceptionHandler(first: u32, handler: unsafe extern "system" fn(*const c_void) -> i32) -> *mut c_void;
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn trace_veh(info: *const c_void) -> i32 {
+    let er = *(info as *const *const u32);
+    let code = *er;
+    let _addr = *(er.add(4) as *const usize);
+    if code == 0xE06D_7363 || code == 0xC000_0005 {
+        let ctx = *((info as *const *const u64).add(1));
+        let _rip = *ctx.add(0xF8 / 8);
+        let _rcx = *ctx.add(0x80 / 8);
+        let _rdx = *ctx.add(0x88 / 8);
+        let obj = *(er.add(10) as *const *const u64);
+        let (q0, q1, _q2, q3) = if code == 0xE06D_7363 && !obj.is_null() {
+            (*obj, *obj.add(1), *obj.add(2), *obj.add(3))
+        } else {
+            (0, 0, 0, 0)
+        };
+        let _msg = if code == 0xE06D_7363 && q1 > 0x10000 && (q1 >> 48) == 0 {
+            std::ffi::CStr::from_ptr(q1 as *const i8).to_string_lossy().into_owned()
+        } else {
+            String::new()
+        };
+        eprintln!("[veh] code=0x{code:08x} rip=0x{_rip:x} rcx=0x{_rcx:x} rdx=0x{_rdx:x} vt=0x{q0:x} hr=0x{q3:08x}");
+    }
+    0 // EXCEPTION_CONTINUE_SEARCH
 }
 
 static MAPPED_RANGES: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
@@ -379,6 +406,9 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
         }
 
         let entry_va = (base as u64).wrapping_add(entry_rva as u64);
+        if execute_entry && std::env::var("PERCY_TRACE").is_ok() {
+            AddVectoredExceptionHandler(1, trace_veh);
+        }
         let rc = if execute_entry && entry_rva != 0 {
             let entry_fn: unsafe extern "system" fn() -> i32 = std::mem::transmute(entry_va as usize);
             entry_fn()
