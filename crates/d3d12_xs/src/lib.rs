@@ -67,6 +67,93 @@ pub fn translate_and_cache_rdna2(
     (stage, hlsl)
 }
 
+/// Compiles lifted HLSL into Windows DXBC bytecode via system `d3dcompiler_47.dll` (`D3DCompile`),
+/// caching compiled DXBC blobs on disk under `dxbc_<hash>.bin`.
+#[cfg(windows)]
+pub fn compile_hlsl_to_dxbc(hlsl: &str, stage: rdna2_hlsl::ShaderStage) -> Result<Vec<u8>, String> {
+    let cache_key = format!("{}:{hlsl}", stage.dxbc_target());
+    if let Some(cached) = cache_load_blob("dxbc", cache_key.as_bytes()) {
+        return Ok(cached);
+    }
+
+    #[repr(C)]
+    struct BlobVtbl {
+        _qi: usize,
+        _add: usize,
+        release: unsafe extern "system" fn(*mut c_void) -> u32,
+        get_ptr: unsafe extern "system" fn(*mut c_void) -> *const u8,
+        get_size: unsafe extern "system" fn(*mut c_void) -> usize,
+    }
+    type D3DCompileFn = unsafe extern "system" fn(
+        *const u8,
+        usize,
+        *const i8,
+        *const c_void,
+        *const c_void,
+        *const i8,
+        *const i8,
+        u32,
+        u32,
+        *mut *mut c_void,
+        *mut *mut c_void,
+    ) -> i32;
+
+    unsafe {
+        let dll = CString::new("d3dcompiler_47.dll").unwrap();
+        let mod_h = LoadLibraryA(dll.as_ptr());
+        if mod_h == 0 {
+            return Err("d3dcompiler_47.dll not found".into());
+        }
+        let sym = CString::new("D3DCompile").unwrap();
+        let addr = GetProcAddress(mod_h, sym.as_ptr());
+        if addr == 0 {
+            return Err("D3DCompile export missing".into());
+        }
+        let compile: D3DCompileFn = std::mem::transmute(addr);
+        let entry = CString::new("main").unwrap();
+        let target = CString::new(stage.dxbc_target()).unwrap();
+        let mut code_blob: *mut c_void = std::ptr::null_mut();
+        let mut err_blob: *mut c_void = std::ptr::null_mut();
+        let hr = compile(
+            hlsl.as_ptr(),
+            hlsl.len(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            entry.as_ptr(),
+            target.as_ptr(),
+            1 << 11, // D3DCOMPILE_OPTIMIZATION_LEVEL1
+            0,
+            &mut code_blob,
+            &mut err_blob,
+        );
+        if hr < 0 || code_blob.is_null() {
+            let mut msg = format!("D3DCompile failed: 0x{hr:08x}");
+            if !err_blob.is_null() {
+                let vtbl = &*(*(err_blob as *const *const BlobVtbl));
+                let ptr = (vtbl.get_ptr)(err_blob);
+                let sz = (vtbl.get_size)(err_blob);
+                if !ptr.is_null() && sz > 0 {
+                    msg = String::from_utf8_lossy(std::slice::from_raw_parts(ptr, sz)).into_owned();
+                }
+                (vtbl.release)(err_blob);
+            }
+            return Err(msg);
+        }
+        if !err_blob.is_null() {
+            let vtbl = &*(*(err_blob as *const *const BlobVtbl));
+            (vtbl.release)(err_blob);
+        }
+        let vtbl = &*(*(code_blob as *const *const BlobVtbl));
+        let ptr = (vtbl.get_ptr)(code_blob);
+        let sz = (vtbl.get_size)(code_blob);
+        let bytes = std::slice::from_raw_parts(ptr, sz).to_vec();
+        (vtbl.release)(code_blob);
+        cache_store_blob("dxbc", cache_key.as_bytes(), &bytes);
+        Ok(bytes)
+    }
+}
+
 #[cfg(windows)]
 extern "system" {
     fn LoadLibraryA(name: *const i8) -> usize;
@@ -422,5 +509,23 @@ mod tests {
         let (stage, hlsl) = translate_and_cache_rdna2(&rdna2, rdna2_hlsl::ShaderStage::Pixel);
         assert_eq!(stage, rdna2_hlsl::ShaderStage::Pixel);
         assert!(hlsl.contains("SV_TARGET"));
+
+        if cfg!(windows) {
+            // Compile lifted VS, PS, and CS RDNA2 programs to real DXBC via d3dcompiler_47.dll.
+            for st in [
+                rdna2_hlsl::ShaderStage::Vertex,
+                rdna2_hlsl::ShaderStage::Pixel,
+                rdna2_hlsl::ShaderStage::Compute,
+            ] {
+                let mut prog = Vec::new();
+                prog.extend_from_slice(&((0x3Fu32 << 25) | (0u32 << 17) | (0x01u32 << 9) | 242u32).to_le_bytes()); // v_mov_b32 v0, 1.0
+                prog.extend_from_slice(&((0x3Eu32 << 26) | (12u32 << 4) | 0xFu32).to_le_bytes()); // exp pos0
+                prog.extend_from_slice(&0u32.to_le_bytes());
+                prog.extend_from_slice(&0xBF81_0000u32.to_le_bytes()); // s_endpgm
+                let (_, lifted) = translate_and_cache_rdna2(&prog, st);
+                let dxbc = compile_hlsl_to_dxbc(&lifted, st).expect("d3dcompiler_47 DXBC compile");
+                assert!(dxbc.len() > 32 && &dxbc[0..4] == b"DXBC");
+            }
+        }
     }
 }

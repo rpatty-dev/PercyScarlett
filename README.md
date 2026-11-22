@@ -21,8 +21,9 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
 | **Disk Overhead** | **0 GB** (NTFS junctions + hardlinks) | ~350 GB extracted intermediates |
 | **CPU Execution** | **Native x86-64** (`machine=0x8664`) | Native / static recompile |
 | **Shipped Sidecar DLLs** | **6/6 live-loaded on Win11 (`LoadLibraryW`)** | Untested |
-| **Compiled Shim DLLs** | **8 Rust `cdylib` DLLs** (`13/13` tests passing, `0` warnings) | Skeleton / Incomplete |
-| **Day-1 Crash Telemetry** | **Built-in VEH fault logger** + `PERCY_XMEM_LOG` + `PERCY_D3D12_LOG` | External debugger required |
+| **Compiled Shim DLLs** | **8 Rust `cdylib` DLLs** (`15/15` tests passing, `0` warnings) | Skeleton / Incomplete |
+| **Shader Recompiler** | **Clean-room RDNA2 -> HLSL -> DXBC** (`d3dcompiler_47.dll` + disk cache) | External DXC required |
+| **Day-1 Crash Telemetry** | **Built-in VEH fault logger** + `PERCY_XMEM_LOG` + `PERCY_D3D12_LOG` + `report.json` | External debugger required |
 | **Xbox VFS & Auto-Stubs** | **`G:/T:/S:` rewrite** + `percyscarlett stubgen` | Manual |
 
 ---
@@ -47,6 +48,9 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
    ```text
    Allocated 16 MiB Scarlett physical test block at 0x1eb59000000 (active=16777216 B, blocks=1)
    ```
+4. **Live Instruction-Level RDNA2 -> HLSL -> Windows `DXBC` Compilation (`crates/d3d12_xs`)**
+   - Decodes GFX10.3 `SOP2`, `SOPP`, `VOP1`, `VOP2`, `VOPC`, `VOP3`, `SMEM`, `DS` (LDS), `EXP` (incl. Mesh `exp target=20` primitive detection), and inline/32-bit literal operands.
+   - Lifts instruction-by-instruction into HLSL (`VS`, `PS`, `CS`, `GS`, `MS`) and compiles live through Windows `System32\d3dcompiler_47.dll` (`D3DCompile`) into verified `DXBC` bytecode with FNV-1a disk caching (`PERCY_SHADER_CACHE`).
 
 ---
 
@@ -96,7 +100,7 @@ cargo build --release --workspace
 
 ---
 
-## Tests (`13/13 passing`, `0` warnings)
+## Tests (`15/15 passing`, `0` warnings)
 
 ```powershell
 cargo test --workspace
@@ -104,8 +108,8 @@ cargo test --workspace
 
 - `e2e_bringup` (1): Synthetic PE32+ `scarlett_guest.exe` build, `inspect`, `stubgen`, and live execution across all 8 shim DLLs
 - `percyscarlett` (3): PE32+ parser, Win32 `VirtualAlloc` pool, live `kernel32.dll` forwarding
-- `d3d12_xs` (2): Host `d3d12.dll` symbol forwarding + `ID3D12DeviceX` COM wrapper (`PERCY_D3D12_WRAP=1`)
-- `xmem` (1), `kernelx` (1), `xg_xs` (1), `xgameruntime` (1), `dstorage` (1), `winrt_xs` (1), `GameInput` (1): C-ABI exports, COM vtables, `HSTRING`, VFS rewrite, and offline GDK runtime checks
+- `d3d12_xs` (4): Host `d3d12.dll` symbol forwarding, `ID3D12DeviceX` COM wrapper, RDNA2 ALU/SMEM/Mesh lifter (`decodes_rdna2_alu_smem_lds_and_detects_mesh_stage`), and live `d3dcompiler_47.dll` `DXBC` compilation + disk cache (`disk_shader_cache_roundtrip`)
+- `xmem` (1), `kernelx` (1), `xg_xs` (1), `xgameruntime` (1), `dstorage` (1), `winrt_xs` (1), `GameInput` (1): C-ABI exports, COM vtables, `HSTRING`, VFS rewrite, `XGameSave` disk persistence, KBM->Gamepad `GameInput`, and offline GDK runtime checks
 
 ---
 
