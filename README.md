@@ -6,7 +6,8 @@
 
 <p align="center">
   <a href="https://rpatty-dev.github.io/PercyScarlett/"><strong>Live Proof & Benchmark Site (GitHub Pages)</strong></a> ·
-  <a href="docs/CODENAME_G6_PROOF.md"><strong>Technical Bring-Up Architecture</strong></a>
+  <a href="docs/CODENAME_G6_PROOF.md"><strong>Technical Bring-Up Architecture</strong></a> ·
+  <a href="https://github.com/sponsors/rpatty-dev"><strong>♥ Support / GitHub Sponsors</strong></a>
 </p>
 
 **Clean-room Rust translation layer, GDK shim suite, and PE32+ inspection toolkit for running unencrypted Xbox Series X|S (Scarlett) executables natively on Windows x64 — built specifically for TheBig6 😉.**
