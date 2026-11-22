@@ -82,8 +82,8 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
    test compute_exec::tests::executes_lifted_rdna2_compute_shader_on_hardware_gpu_and_matches_reference ... ok
    test compute_exec::tests::executes_rdna2_loop_with_sopp_branch_on_hardware_gpu ... ok
    ```
-5. **6/6 Unmodified Scarlett GDKX Samples Booted Live (`percyscarlett run`)**
-   With `DeviceXProxy` x64 `ID3D12Device` forwarders, `DxgiDeviceProxy` (`IDXGIDevice`/`1`/`2`), `XSystemGetDeviceType() = 7` (Xbox Series X), `XGameRuntimeInitialize`, and `RegisterAppStateChangeNotification`:
+5. **6/6 Unmodified Scarlett GDKX Samples + `SimpleTriangleDesktop.exe` Rendered Live (`percyscarlett run`)**
+   With `DeviceXProxy` x64 `ID3D12Device` forwarders, `DxgiDeviceProxy` (`IDXGIDevice`/`1`/`2`), `XSystemGetDeviceType() = 7` (Xbox Series X), `XGameRuntimeInitialize`, `RegisterAppStateChangeNotification`, and `pe_loader` `GetModuleFileNameW/A` + `GetModuleHandleW/A` virtualization:
    ```text
    SimpleCompute_GDKX.exe: BOOTED & RUNNING
    SimpleTriangle_GDKX.exe: BOOTED & RUNNING
@@ -91,7 +91,11 @@ Pure Rust · Zero third-party emulator code · Zero proprietary SDK headers · `
    SimpleTexture_GDKX.exe: BOOTED & RUNNING
    SimpleBezier_GDKX.exe: BOOTED & RUNNING
    SimpleInstancing_GDKX.exe: BOOTED & RUNNING
+   SimpleTriangleDesktop.exe: 1296x759 D3D12 window rendered live (percyscarlett run, 0 crashes)
    ```
+   <p align="center">
+     <img src="docs/assets/simple_triangle_desktop.png" width="760" alt="SimpleTriangleDesktop.exe rendered live via percyscarlett run" />
+   </p>
    Sample lifted Mesh shader:
    ```hlsl
    // PercyScarlett RDNA2 -> HLSL (ms, 5 insns, 1 exports)

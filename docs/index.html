@@ -219,14 +219,16 @@ test compute_exec::tests::executes_rdna2_loop_with_sopp_branch_on_hardware_gpu .
     </section>
 
     <section>
-      <h2>Proof 2 — 6/6 Unmodified Scarlett GDKX Samples Booted via <code>percyscarlett run</code></h2>
-      <p>Unmodified Microsoft Scarlett GDKX sample executables mapped in-process via <code>percyscarlett run</code> (with <code>DeviceXProxy</code> x64 vtable forwarders, <code>DxgiDeviceProxy</code>, <code>XSystemGetDeviceType() = 7</code> Xbox Series X, and <code>XGameRuntimeInitialize</code>), entering live render loops on Windows 11:</p>
+      <h2>Proof 2 — 6/6 Scarlett GDKX Samples + Live Rendered <code>SimpleTriangleDesktop.exe</code></h2>
+      <p>Unmodified Microsoft Scarlett GDKX &amp; GDK sample executables mapped in-process via <code>percyscarlett run</code> (with <code>DeviceXProxy</code> x64 vtable forwarders, <code>DxgiDeviceProxy</code>, <code>XSystemGetDeviceType() = 7</code> Xbox Series X, <code>XGameRuntimeInitialize</code>, and <code>GetModuleFileNameW</code>/<code>GetModuleHandleW</code> IAT virtualization) rendering live on Windows 11 (RTX 2060 SUPER):</p>
       <pre>SimpleCompute_GDKX.exe: BOOTED &amp; RUNNING
 SimpleTriangle_GDKX.exe: BOOTED &amp; RUNNING
 SimpleLighting_GDKX.exe: BOOTED &amp; RUNNING
 SimpleTexture_GDKX.exe: BOOTED &amp; RUNNING
 SimpleBezier_GDKX.exe: BOOTED &amp; RUNNING
-SimpleInstancing_GDKX.exe: BOOTED &amp; RUNNING</pre>
+SimpleInstancing_GDKX.exe: BOOTED &amp; RUNNING
+SimpleTriangleDesktop.exe: 1296x759 D3D12 triangle rendered live (0 crashes)</pre>
+      <img src="assets/simple_triangle_desktop.png" alt="SimpleTriangleDesktop.exe rendered live via percyscarlett run" style="width:100%;max-width:860px;border-radius:10px;border:1px solid #23293a;margin-top:12px;" />
     </section>
 
     <section>
