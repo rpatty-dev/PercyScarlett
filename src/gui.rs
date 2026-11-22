@@ -235,6 +235,7 @@ struct DashboardApp {
     busy: Arc<Mutex<bool>>,
     update: Arc<Mutex<UpdateState>>,
     runtime_count: Arc<Mutex<(usize, usize, PathBuf)>>,
+    self_test: Arc<Mutex<Option<crate::self_test::SelfTestResult>>>,
     selected_tile: usize,
     tab_switches: f32,
 }
@@ -421,6 +422,7 @@ impl DashboardApp {
             busy: Arc::new(Mutex::new(false)),
             update,
             runtime_count: Arc::new(Mutex::new(count_installed_runtime_files())),
+            self_test: Arc::new(Mutex::new(None)),
             selected_tile: 0,
             tab_switches: 0.0,
         }
@@ -674,14 +676,49 @@ impl DashboardApp {
                         ui.label(RichText::new(status).size(13.5).color(DIM));
                     });
                     ui.add_space(10.0);
-                    let btn = if ready {
-                        egui::Button::new("Reinstall / add to Start Menu")
-                    } else {
-                        primary("Download runtime & add to Start Menu")
-                    };
-                    if ui.add_enabled(!is_busy, btn).clicked() {
-                        self.install_runtime(ctx);
-                    }
+                    ui.horizontal(|ui| {
+                        let btn = if ready {
+                            egui::Button::new("Reinstall / add to Start Menu")
+                        } else {
+                            primary("Download runtime & add to Start Menu")
+                        };
+                        if ui.add_enabled(!is_busy, btn).clicked() {
+                            self.install_runtime(ctx);
+                        }
+                        if ui.add_enabled(!is_busy, egui::Button::new("Run Self-Test")).clicked() {
+                            let shim_dir = if ready {
+                                rt_dir.clone()
+                            } else {
+                                std::env::current_exe()
+                                    .ok()
+                                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                                    .unwrap_or_else(|| PathBuf::from("."))
+                            };
+                            let st_slot = Arc::clone(&self.self_test);
+                            let console = Arc::clone(&self.console);
+                            let busy = Arc::clone(&self.busy);
+                            let ctx2 = ctx.clone();
+                            *busy.lock().unwrap() = true;
+                            std::thread::spawn(move || {
+                                let res = crate::self_test::run_self_test(&shim_dir);
+                                {
+                                    let mut c = console.lock().unwrap();
+                                    c.clear();
+                                    c.push_str(&format!("{}\n\n{}\n", res.summary, res.markdown));
+                                }
+                                *st_slot.lock().unwrap() = Some(res);
+                                *busy.lock().unwrap() = false;
+                                ctx2.request_repaint();
+                            });
+                        }
+                        let st_res = self.self_test.lock().unwrap().clone();
+                        if let Some(res) = st_res {
+                            let lbl = format!("Submit GitHub Issue ({}/{})", res.passed, res.total);
+                            if ui.add(primary(&lbl)).clicked() {
+                                ctx.open_url(egui::OpenUrl::new_tab(res.issue_url));
+                            }
+                        }
+                    });
                 });
                 if let Some(tex) = &self.mascot_tex {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

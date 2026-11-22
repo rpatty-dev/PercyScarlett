@@ -3,6 +3,7 @@ mod gui;
 mod mascot;
 mod pe64;
 mod pe_loader;
+mod self_test;
 mod shader_bench;
 mod xmem;
 
@@ -140,6 +141,25 @@ fn main() {
                 .unwrap_or(0);
             shader_bench::run_shader_benchmark(p, limit, dxil);
         }
+        Some("self-test") => {
+            let shim_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                .unwrap_or_else(|| Path::new(".").to_path_buf());
+            let res = self_test::run_self_test(&shim_dir);
+            println!("{}\n\n{}", res.summary, res.markdown);
+            let _ = fs::write("percyscarlett_test_report.md", &res.markdown);
+            println!("Saved report: percyscarlett_test_report.md");
+            println!("Pre-filled GitHub Issue URL:\n{}", res.issue_url);
+            if args.iter().any(|a| a == "--open") {
+                #[cfg(windows)]
+                {
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/C", "start", "", &res.issue_url])
+                        .spawn();
+                }
+            }
+        }
         Some("mascot") => {
             mascot::print_mascot_banner();
         }
@@ -169,7 +189,8 @@ fn main() {
             println!("  percyscarlett verify-dlls <game_dir>");
             println!("  percyscarlett stubgen <game.exe> <out_dir>");
             println!("  percyscarlett report <game.exe> <report.json>");
-            println!("  percyscarlett run <game.exe>");
+            println!("  percyscarlett run <game.exe> [--dry-run]");
+            println!("  percyscarlett self-test [--open]");
             println!("  percyscarlett bench-shaders <shaders.rpf> [--dxil] [--limit N]");
             println!("  percyscarlett probe-mem");
             println!("  percyscarlett shims");
