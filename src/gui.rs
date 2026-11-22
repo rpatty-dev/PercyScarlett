@@ -239,6 +239,8 @@ struct DashboardApp {
     action_modal: Arc<Mutex<Option<ActionModal>>>,
     selected_tile: usize,
     tab_switches: f32,
+    splash_started: Option<std::time::Instant>,
+    splash_centered: bool,
 }
 
 #[derive(Clone)]
@@ -455,6 +457,8 @@ impl DashboardApp {
             action_modal: Arc::new(Mutex::new(None)),
             selected_tile: 0,
             tab_switches: 0.0,
+            splash_started: Some(std::time::Instant::now()),
+            splash_centered: false,
         }
     }
 
@@ -939,7 +943,70 @@ impl DashboardApp {
 }
 
 impl eframe::App for DashboardApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        if self.splash_started.is_some() {
+            [0.0, 0.0, 0.0, 0.0]
+        } else {
+            [11.0 / 255.0, 12.0 / 255.0, 13.0 / 255.0, 1.0]
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let center_vp = |w: f32, h: f32| {
+            if let Some(mon) = ctx.input(|i| i.viewport().monitor_size) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(Pos2::new(
+                    ((mon.x - w) * 0.5).max(0.0),
+                    ((mon.y - h) * 0.5).max(0.0),
+                )));
+            }
+        };
+        if let Some(t0) = self.splash_started {
+            if !self.splash_centered {
+                center_vp(260.0, 260.0);
+                self.splash_centered = true;
+            }
+            let dt = t0.elapsed().as_secs_f32();
+            if dt < 0.70 {
+                let alpha = if dt < 0.18 {
+                    (dt / 0.18).clamp(0.0, 1.0)
+                } else if dt > 0.52 {
+                    ((0.70 - dt) / 0.18).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE.fill(Color32::TRANSPARENT))
+                    .show(ctx, |ui| {
+                        let r = ui.max_rect();
+                        let c = r.center();
+                        let a = (alpha * 255.0) as u8;
+                        ui.painter().circle_stroke(
+                            c,
+                            96.0,
+                            Stroke::new(2.0_f32, Color32::from_rgba_unmultiplied(16, 124, 16, (alpha * 140.0) as u8)),
+                        );
+                        if let Some(tex) = &self.mascot_tex {
+                            let sz = Vec2::splat(186.0 + alpha * 14.0);
+                            let ir = Rect::from_center_size(c, sz);
+                            ui.painter().image(
+                                tex.id(),
+                                ir,
+                                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                Color32::from_rgba_unmultiplied(255, 255, 255, a),
+                            );
+                        }
+                    });
+                ctx.request_repaint();
+                return;
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(1180.0, 780.0)));
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(Vec2::new(980.0, 680.0)));
+            center_vp(1180.0, 780.0);
+            self.splash_started = None;
+        }
+
         let is_busy = *self.busy.lock().unwrap();
 
         egui::TopBottomPanel::top("top_bar")
@@ -1249,7 +1316,11 @@ pub fn run_dashboard() -> eframe::Result<()> {
             let rgba = img.to_rgba8();
             (rgba.as_raw().to_vec(), rgba.width(), rgba.height())
         });
-    let mut vb = egui::ViewportBuilder::default().with_inner_size([1180.0, 780.0]).with_min_inner_size([980.0, 680.0]);
+    let mut vb = egui::ViewportBuilder::default()
+        .with_inner_size([260.0, 260.0])
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_always_on_top();
     if let Some((ref raw, w, h)) = mascot_rgba {
         vb = vb.with_icon(egui::IconData {
             rgba: raw.clone(),
