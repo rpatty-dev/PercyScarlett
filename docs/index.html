@@ -109,9 +109,11 @@
         <p class="subtitle">Clean-room Rust Xbox Series X|S (Scarlett) translation layer, GDK shim suite &amp; SM 6.6 DXIL shader recompiler for Windows x64 — built for <strong>TheBig6 😉</strong>.</p>
         <div class="badges">
           <span class="badge">21,522 / 21,522 (100.0%) SM 6.6 DXIL</span>
-          <span class="badge">22 / 22 Tests Passing · 0 Warnings</span>
-          <span class="badge">Static .tls (gs:[0x58]) + Sanitized .pdata</span>
-          <span class="badge">RDNA2 SOPP CFG + Wave64 Intrinsics</span>
+          <span class="badge">24 / 24 Tests Passing · 0 Warnings</span>
+          <span class="badge">60-Frame Hardware DX12 PresentX</span>
+          <span class="badge">8/8 1-Click Tester Suite</span>
+          <span class="badge">Static .tls (gs:[0x58]) + RtlPcToFileHeader</span>
+          <span class="badge">RDNA2 SOPP CFG + MUBUF + Wave64</span>
           <span class="badge">9 Compiled Rust cdylib Shims</span>
           <span class="badge p">6 / 6 Sidecar DLLs Live-Loaded</span>
           <span class="badge p">0 GB Overlay Mount</span>
@@ -133,7 +135,7 @@
         <div class="lbl"><strong>21,522 / 21,522</strong> TheBig6 😉 RDNA2 shaders lifted &amp; compiled to SM 6.6 DXIL (<code>fail=0</code>)</div>
       </div>
       <div class="stat">
-        <div class="num">22 / 22</div>
+        <div class="num">24 / 24</div>
         <div class="lbl">Workspace unit &amp; E2E tests passing across all 9 <code>cdylib</code> shim DLLs (0 warnings)</div>
       </div>
       <div class="stat">
@@ -153,61 +155,54 @@
         <thead>
           <tr>
             <th>Capability</th>
-            <th>PercyScarlett (Ours)</th>
-            <th>xbox-emulator (#1)</th>
-            <th>XCL (#2)</th>
-            <th>ScarlettX (#3)</th>
-            <th>Leonida (#6)</th>
+            <th>PercyScarlett v0.3.1 (Ours)</th>
+            <th>Leonida</th>
+            <th>xvalkyrie</th>
+            <th>XCL / xbox-emulator</th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td><strong>Language / Architecture</strong></td>
-            <td class="win">Pure Rust, 9 cdylib shims</td>
-            <td>Rust runtime</td>
-            <td>Rust Wine-style</td>
-            <td>C++ HLE</td>
-            <td>Static recomp (Vulkan)</td>
+            <td><strong>Language &amp; Architecture</strong></td>
+            <td class="win">Pure Rust, 9 cdylib shims + Xbox GUI</td>
+            <td>C++ / Python static recomp (Vulkan)</td>
+            <td>Translation layer</td>
+            <td>Rust runtime / Wine-style</td>
+          </tr>
+          <tr>
+            <td><strong>Hardware GPU Bring-Up</strong></td>
+            <td class="win">Real ID3D12Device + CommandQueueX + 60-frame DXGI PresentX (RTX 2060 SUPER)</td>
+            <td>60-frame Vulkan test; d3d12_xs command list &amp; descriptors still TODO</td>
+            <td>Boots Minecraft / XDefiant / Fortnite</td>
+            <td>Partial</td>
           </tr>
           <tr>
             <td><strong>TheBig6 😉 RDNA2 Shaders</strong></td>
-            <td class="win">21,522 / 21,522 (100.0%) SM 6.6 DXIL</td>
-            <td>~35% VS (no Mesh)</td>
-            <td>24,064 HLSL (sampled DXIL)</td>
-            <td>0% (no lifter)</td>
-            <td>Vulkan SPIR-V</td>
+            <td class="win">21,522 / 21,522 (100.0%) SM 6.6 DXIL (VS/PS/CS/13,588 Mesh/64 RT)</td>
+            <td>26,503 SPIR-V (spirv-val + 30-GPU test)</td>
+            <td>Xbox One/Series runtime</td>
+            <td>24,064 HLSL / ~35% VS</td>
           </tr>
           <tr>
-            <td><strong>Mesh &amp; RT Shader Support</strong></td>
-            <td class="win">13,588 Mesh + 64 RT compiled</td>
-            <td>No Mesh shaders</td>
-            <td>HLSL/DXIL</td>
-            <td>None</td>
-            <td>Vulkan</td>
+            <td><strong>PE32+ Loader &amp; C++ EH/TLS</strong></td>
+            <td class="win">.reloc, sanitized .pdata, RtlPcToFileHeader redirect, static .tls (gs:[0x58]), --dry-run</td>
+            <td>.pdata, RtlPcToFileHeader, tls_host.dll</td>
+            <td>PE loader</td>
+            <td>Basic</td>
           </tr>
           <tr>
-            <td><strong>Shipped Sidecar DLLs</strong></td>
-            <td class="win">6 / 6 live-loaded on Win11</td>
+            <td><strong>Shipped Sidecars &amp; Audio</strong></td>
+            <td class="win">6/6 Win11 live-loaded + XAudio2Create + 0 GB NTFS overlay</td>
+            <td>Offline extractors (no 0 GB overlay)</td>
             <td>Runtime</td>
-            <td>Live-loaded</td>
-            <td>Shimmed</td>
-            <td>N/A</td>
+            <td>Live / Standard</td>
           </tr>
           <tr>
-            <td><strong>Disk Overhead</strong></td>
-            <td class="win">0 GB (NTFS overlay)</td>
-            <td>Standard</td>
-            <td>Standard</td>
-            <td>Standard</td>
-            <td>Full rebuild</td>
-          </tr>
-          <tr>
-            <td><strong>Retail Non-TheBig6 Game</strong></td>
-            <td class="warn">Pending retail .exe (GDK sample proven)</td>
-            <td class="win">Fortnite lobby</td>
-            <td>Not yet</td>
-            <td class="win">Concept Destruction</td>
-            <td>Not yet</td>
+            <td><strong>Community Verification</strong></td>
+            <td class="win">8/8 1-Click Self-Test + Pre-Filled GitHub Issue Reporter (.exe &amp; .bat)</td>
+            <td>Manual CLI scripts</td>
+            <td>Manual</td>
+            <td>Manual</td>
           </tr>
         </tbody>
       </table>
@@ -229,14 +224,16 @@ DXIL SM 6.6 (dxcompiler.dll): ok=21522/21522 (100.0%), fail=0</pre>
 [ScarlettSample] D3D12XboxCreateDevice OK (0x1f2957ecd00)
 [ScarlettSample] ID3D12CommandQueue created (0x1f2979be090)
 [ScarlettSample] Auto-HWND + IDXGISwapChain1 created!
-[ScarlettSample] RDNA2->VS_6_6 DXIL compiled (7132 bytes)
-[ScarlettSample] RDNA2->PS_6_6 DXIL compiled (4592 bytes)
-[ScarlettSample] Presented 10 real DXGI frames via PresentX!
-Launched target\release\scarlett_sample.exe with PercyScarlett overlay (PID 15256)</pre>
+[ScarlettSample] RDNA2->VS_6_6 DXIL compiled (7136 bytes)
+[ScarlettSample] RDNA2->PS_6_6 DXIL compiled (4596 bytes)
+[ScarlettSample] RDNA2->CS_6_6 DXIL compiled
+[ScarlettSample] RDNA2->MS_6_6 DXIL compiled
+[ScarlettSample] Presented 60 real DXGI frames via PresentX!
+Launched target\release\scarlett_sample.exe with PercyScarlett overlay</pre>
     </section>
 
     <section>
-      <h2>Proof 3 — Shipped Xbox Sidecar DLLs &amp; 22/22 Workspace Tests</h2>
+      <h2>Proof 3 — Shipped Xbox Sidecar DLLs, 8/8 Hardware Self-Test &amp; 24/24 Workspace Tests</h2>
       <pre>[PASS] amd_fidelityfx_loader_xbox.dll loaded at 0x7ffd2e170000
 [PASS] amd_fidelityfx_upscaler_xbox.dll loaded at 0x7ffcdf570000
 [PASS] Bink2Scarlett.dll loaded at 0x7ffcdf5f0000

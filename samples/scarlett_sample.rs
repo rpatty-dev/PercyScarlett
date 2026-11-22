@@ -107,7 +107,7 @@ fn main() {
         rdna2.extend_from_slice(&0u32.to_le_bytes());
         rdna2.extend_from_slice(&0xBF81_0000u32.to_le_bytes()); // s_endpgm
 
-        for (name, stage) in [("VS", 0u32), ("PS", 1u32)] {
+        for (name, stage) in [("VS", 0u32), ("PS", 1u32), ("CS", 2u32), ("MS", 3u32)] {
             let mut dxil_ptr: *mut u8 = null_mut();
             let mut dxil_len: usize = 0;
             let hr_sh = PercyLiftRdna2ToDxil(rdna2.as_ptr(), rdna2.len(), stage, &mut dxil_ptr, &mut dxil_len);
@@ -115,8 +115,8 @@ fn main() {
             println!("[ScarlettSample] RDNA2->{name}_6_6 DXIL compiled ({dxil_len} bytes)");
         }
 
-        // Present 10 real DXGI frames via PresentX (accepts S_OK and DXGI_STATUS_OCCLUDED >= 0)
-        for f in 1..=10 {
+        // Present 60 real DXGI frames via PresentX (accepts S_OK and DXGI_STATUS_OCCLUDED >= 0)
+        for f in 1..=60 {
             assert_eq!(WaitForOriginX(cq, 0, 16667), 0);
             let hr_p = PresentX(cq, null(), null());
             assert!(hr_p >= 0, "PresentX frame {f} failed: 0x{hr_p:08x}");
