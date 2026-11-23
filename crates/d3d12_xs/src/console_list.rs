@@ -322,11 +322,15 @@ lt!(l59, 59, 55);
 const LT_LO: [unsafe extern "system" fn(); 16] = [l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23, l24, l25, l26];
 const LT: [unsafe extern "system" fn(); 29] = [l31, l32, l33, l34, l35, l36, l37, l38, l39, l40, l41, l42, l43, l44, l45, l46, l47, l48, l49, l50, l51, l52, l53, l54, l55, l56, l57, l58, l59];
 
+unsafe extern "system" fn s_generic(_a: usize, _b: usize, _c: usize, _d: usize, _e: usize, _f: usize) -> usize {
+    0
+}
+
 static VTBL: OnceLock<usize> = OnceLock::new();
 
 fn vtbl() -> usize {
     *VTBL.get_or_init(|| {
-        let mut v = [0usize; 128];
+        let mut v = [s_generic as usize; 256];
         for i in 0..60 {
             v[i] = FWD[i] as usize;
         }

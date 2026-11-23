@@ -196,27 +196,42 @@ fn main() {
                     }
                 }
                 match exe_bytes {
-                    Ok(data) => match pe_loader::load_and_run_pe64(&data, &shim_dir, !dry_run) {
-                        Ok((st, rc)) => {
-                            let verb = if dry_run { "Dry-run mapped" } else { "Executed" };
-                            println!(
-                                "{verb} {} (base=0x{:x}, entry=0x{:x}, pdata={}, tls_cb={}, tls_bytes={}, relocs={}, resolved={}, stubbed={}) -> rc={rc}",
-                                exe_path.display(),
-                                st.mapped_base,
-                                st.entry_va,
-                                st.pdata_entries,
-                                st.tls_callbacks,
-                                st.static_tls_bytes,
-                                st.relocations_applied,
-                                st.resolved_imports,
-                                st.stubbed_imports
-                            );
-                            if !st.missing_imports.is_empty() {
-                                println!("Missing imports ({}): {}", st.missing_imports.len(), st.missing_imports.join(", "));
+                    Ok(data) => {
+                        let shim_dir_clone = shim_dir.clone();
+                        let runner = move || pe_loader::load_and_run_pe64(&data, &shim_dir_clone, !dry_run);
+                        let run_res = if !dry_run {
+                            std::thread::Builder::new()
+                                .name("scarlett-guest-main".into())
+                                .stack_size(64 * 1024 * 1024)
+                                .spawn(runner)
+                                .map_err(|e| format!("Failed to spawn guest thread: {e}"))
+                                .and_then(|h| h.join().map_err(|_| "Guest thread panicked or exited".to_string()))
+                                .and_then(|r| r)
+                        } else {
+                            runner()
+                        };
+                        match run_res {
+                            Ok((st, rc)) => {
+                                let verb = if dry_run { "Dry-run mapped" } else { "Executed" };
+                                println!(
+                                    "{verb} {} (base=0x{:x}, entry=0x{:x}, pdata={}, tls_cb={}, tls_bytes={}, relocs={}, resolved={}, stubbed={}) -> rc={rc}",
+                                    exe_path.display(),
+                                    st.mapped_base,
+                                    st.entry_va,
+                                    st.pdata_entries,
+                                    st.tls_callbacks,
+                                    st.static_tls_bytes,
+                                    st.relocations_applied,
+                                    st.resolved_imports,
+                                    st.stubbed_imports
+                                );
+                                if !st.missing_imports.is_empty() {
+                                    println!("Missing imports ({}): {}", st.missing_imports.len(), st.missing_imports.join(", "));
+                                }
                             }
+                            Err(e) => eprintln!("Run failed: {e}"),
                         }
-                        Err(e) => eprintln!("Run failed: {e}"),
-                    },
+                    }
                     Err(e) => eprintln!("Read error: {e}"),
                 }
             }

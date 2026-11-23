@@ -19,6 +19,11 @@ members = [
     "crates/acphal",
     "crates/xapu",
     "crates/xcurl",
+    "crates/amd_fidelityfx_loader_xbox",
+    "crates/Bink2Scarlett",
+    "crates/libHttpClient.GDK",
+    "crates/XboxBvhBuilder",
+    "crates/chad",
 ]
 
 [dependencies]

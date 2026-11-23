@@ -92,6 +92,26 @@ pub unsafe extern "system" fn XGCreateTexture2DComputer(
     S_OK
 }
 
+#[no_mangle]
+pub unsafe extern "system" fn XGCreateTextureComputer(
+    desc: *const c_void,
+    out_computer: *mut *mut c_void,
+) -> i32 {
+    XGCreateTexture2DComputer(desc, out_computer)
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XGSuggestSwizzleMode(
+    _desc: *const c_void,
+    out_swizzle: *mut u32,
+) -> i32 {
+    if !out_swizzle.is_null() {
+        *out_swizzle = 0;
+    }
+    S_OK
+}
+
+
 #[repr(C)]
 pub struct XgTexture2DLayout {
     pub row_pitch_bytes: u32,

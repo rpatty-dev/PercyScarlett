@@ -7,3 +7,6 @@ license = "MIT"
 [lib]
 crate-type = ["cdylib"]
 name = "dstorage"
+
+[dependencies]
+flate2 = "1"

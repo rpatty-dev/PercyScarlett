@@ -1,0 +1,8 @@
+[package]
+name = "libhttpclient_gdk"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "libhttpclient_gdk"
+crate-type = ["cdylib"]

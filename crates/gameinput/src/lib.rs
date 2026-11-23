@@ -7,6 +7,7 @@ const S_OK: i32 = 0;
 const E_POINTER: i32 = 0x8000_4003u32 as i32;
 
 #[cfg(windows)]
+#[link(name = "user32")]
 extern "system" {
     fn GetAsyncKeyState(vkey: i32) -> i16;
 }

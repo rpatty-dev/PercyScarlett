@@ -7,14 +7,61 @@
 use std::ffi::c_void;
 
 const S_OK: i32 = 0;
-const E_NOTIMPL: i32 = 0x8000_4001u32 as i32;
 const E_POINTER: i32 = 0x8000_4003u32 as i32;
 const E_OUTOFMEMORY: i32 = 0x8007_000Eu32 as i32;
+
+#[repr(C)]
+struct MemoryBasicInformation {
+    base_address: *mut c_void,
+    allocation_base: *mut c_void,
+    allocation_protect: u32,
+    partition_id: u16,
+    region_size: usize,
+    state: u32,
+    protect: u32,
+    ty: u32,
+}
 
 #[cfg(windows)]
 extern "system" {
     fn VirtualAlloc(addr: *mut c_void, size: usize, ty: u32, protect: u32) -> *mut c_void;
     fn VirtualFree(addr: *mut c_void, size: usize, ty: u32) -> i32;
+    fn VirtualQuery(addr: *const c_void, buf: *mut MemoryBasicInformation, len: usize) -> usize;
+}
+
+static LOW32_ARENA: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0x2000_0000);
+
+unsafe fn apu_alloc_low32(size: usize) -> *mut c_void {
+    let aligned_size = (size + 0xFFFF) & !0xFFFF; // 64KB align
+    for _ in 0..100 {
+        let addr = LOW32_ARENA.fetch_add(aligned_size, std::sync::atomic::Ordering::SeqCst);
+        if addr + aligned_size >= 0x7FFF_0000 {
+            break;
+        }
+        let p = VirtualAlloc(addr as *mut c_void, aligned_size, 0x3000, 0x04);
+        if !p.is_null() {
+            return p;
+        }
+    }
+    VirtualAlloc(std::ptr::null_mut(), aligned_size, 0x3000, 0x04)
+}
+
+unsafe fn try_write_heap_ptr(ptr: *mut c_void, val: *mut c_void) {
+    if ptr.is_null() || (ptr as usize) < 0x10000 || (ptr as usize % 8) != 0 {
+        return;
+    }
+    let mut mbi: MemoryBasicInformation = std::mem::zeroed();
+    if VirtualQuery(ptr, &mut mbi, std::mem::size_of::<MemoryBasicInformation>()) != 0 {
+        const MEM_COMMIT: u32 = 0x1000;
+        const PAGE_READWRITE: u32 = 0x04;
+        const PAGE_WRITECOPY: u32 = 0x08;
+        const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+        const PAGE_EXECUTE_WRITECOPY: u32 = 0x80;
+        let writable = (mbi.protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+        if mbi.state == MEM_COMMIT && writable {
+            *(ptr as *mut *mut c_void) = val;
+        }
+    }
 }
 
 #[no_mangle]
@@ -89,8 +136,10 @@ static ACP_VTBL: std::sync::OnceLock<[Slot; 16]> = std::sync::OnceLock::new();
 
 unsafe fn acp_object() -> *mut c_void {
     let v = ACP_VTBL.get_or_init(|| {
-        [a0 as usize, a1 as usize, acp_send as usize, acp_receive as usize, a4 as usize, a5 as usize, a6 as usize, a7 as usize,
-         a8 as usize, a9 as usize, a10 as usize, a11 as usize, a12 as usize, a13 as usize, a14 as usize, a15 as usize]
+        [a0 as *const () as usize, a1 as *const () as usize, acp_send as *const () as usize, acp_receive as *const () as usize,
+         a4 as *const () as usize, a5 as *const () as usize, a6 as *const () as usize, a7 as *const () as usize,
+         a8 as *const () as usize, a9 as *const () as usize, a10 as *const () as usize, a11 as *const () as usize,
+         a12 as *const () as usize, a13 as *const () as usize, a14 as *const () as usize, a15 as *const () as usize]
     });
     #[repr(C)]
     struct Obj {
@@ -106,17 +155,19 @@ pub unsafe extern "system" fn AcpHalAllocateShapeContexts(desc: *mut c_void, b: 
     if desc.is_null() {
         return E_POINTER;
     }
-    // Five u32 counts at +0x00..+0x10, matching context-array pointers at +0x18..+0x38
-    // (observed element sizes 32/?/?/16/64 bytes; 64 is used as an upper bound).
+    // Five u32 counts at +0x00..+0x10, matching context-array pointers at +0x18..+0x38.
+    // Allocate real non-null blocks for every slot.
     let d = desc as *mut u8;
     for i in 0..5 {
         let n = *(d.add(i * 4) as *const u32) as usize;
+        let count = n.max(1);
+        let size = (count * 64).max(4096);
+        let ptr = apu_alloc_low32(size);
+        if !ptr.is_null() {
+            std::ptr::write_bytes(ptr as *mut u8, 0, size);
+        }
         let slot = d.add(0x18 + i * 8) as *mut *mut c_void;
-        *slot = if n == 0 {
-            std::ptr::null_mut()
-        } else {
-            VirtualAlloc(std::ptr::null_mut(), n * 64, 0x3000, 0x04)
-        };
+        *slot = ptr;
     }
     S_OK
 }
@@ -134,10 +185,12 @@ pub unsafe extern "system" fn ApuAlloc(va: *mut *mut c_void, pa: *mut u32, size:
     if va.is_null() {
         return E_POINTER;
     }
-    let p = VirtualAlloc(std::ptr::null_mut(), (size as usize).max(1), 0x3000, 0x04);
+    let alloc_size = (size as usize).max(4096);
+    let p = apu_alloc_low32(alloc_size);
     if p.is_null() {
         return E_OUTOFMEMORY;
     }
+    std::ptr::write_bytes(p as *mut u8, 0, alloc_size);
     *va = p;
     if !pa.is_null() {
         *pa = p as usize as u32;
@@ -164,4 +217,36 @@ pub unsafe extern "system" fn ApuIsVirtualAddressValid(va: *const c_void, _pa: u
 pub unsafe extern "system" fn ApuMapVirtualAddress(va: *const c_void) -> u32 {
     eprintln!("[apu] ApuMapVirtualAddress va={:?}", va);
     va as usize as u32
+}
+
+static mut HEAP_ALLOCATED: *mut c_void = std::ptr::null_mut();
+
+#[no_mangle]
+pub unsafe extern "system" fn ApuCreateHeap(
+    arg0: *mut c_void,
+    arg1: *mut c_void,
+    size: usize,
+    _alignment: usize,
+) -> i32 {
+    eprintln!("[apu] ApuCreateHeap arg0={:?} arg1={:?} size={:#x}", arg0, arg1, size);
+    let heap_size = (size.max(0x400000)).max(32 * 1024 * 1024);
+    if HEAP_ALLOCATED.is_null() {
+        HEAP_ALLOCATED = apu_alloc_low32(heap_size);
+        if !HEAP_ALLOCATED.is_null() {
+            std::ptr::write_bytes(HEAP_ALLOCATED as *mut u8, 0, heap_size);
+        }
+    }
+    try_write_heap_ptr(arg0, HEAP_ALLOCATED);
+    try_write_heap_ptr(arg1, HEAP_ALLOCATED);
+    S_OK
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn ApuMapApuAddress(
+    apu_addr: u32,
+) -> *mut c_void {
+    if apu_addr == 0 {
+        return std::ptr::null_mut();
+    }
+    apu_addr as usize as *mut c_void
 }

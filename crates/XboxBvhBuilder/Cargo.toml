@@ -1,0 +1,8 @@
+[package]
+name = "xboxbvhbuilder"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "xboxbvhbuilder"
+crate-type = ["cdylib"]

@@ -215,6 +215,120 @@ pub unsafe extern "system" fn XMemTransferMemory(_from: u64, _bytes: u64) -> i32
     0
 }
 
+#[no_mangle]
+pub unsafe extern "system" fn XMemVirtualAlloc(
+    lp_address: *mut c_void,
+    dw_size: usize,
+    fl_allocation_type: u32,
+    fl_protect: u32,
+) -> *mut c_void {
+    let mut win32_type = if !lp_address.is_null() {
+        // If address is provided, always commit (MEM_COMMIT)
+        0x1000u32
+    } else if fl_allocation_type & 0x2000 != 0 && fl_allocation_type & 0x1000 == 0 && (fl_allocation_type & 0x40000 == 0) {
+        0x2000u32 // MEM_RESERVE only
+    } else {
+        0x3000u32 // MEM_COMMIT | MEM_RESERVE
+    };
+    let win32_prot = match fl_protect & 0xFF {
+        0x10 => 0x10, // PAGE_EXECUTE
+        0x20 => 0x20, // PAGE_EXECUTE_READ
+        0x40 | 0x27 | 0x07 => 0x40, // PAGE_EXECUTE_READWRITE
+        0x02 => 0x02, // PAGE_READONLY
+        _ => 0x04,    // PAGE_READWRITE
+    };
+    let dw_size = dw_size.max(0x10000);
+    let mut ptr = VirtualAlloc(lp_address, dw_size, win32_type, win32_prot);
+    if ptr.is_null() && !lp_address.is_null() {
+        // Fallback: try MEM_COMMIT | MEM_RESERVE at requested address
+        ptr = VirtualAlloc(lp_address, dw_size, 0x3000, win32_prot);
+    }
+    if ptr.is_null() {
+        // Fallback: try MEM_RESERVE only (VEH on-demand commit handles pages as touched)
+        ptr = VirtualAlloc(lp_address, dw_size, 0x2000, win32_prot);
+    }
+    if ptr.is_null() {
+        // Fallback: anywhere in memory, MEM_RESERVE
+        ptr = VirtualAlloc(std::ptr::null_mut(), dw_size, 0x2000, win32_prot);
+    }
+    if ptr.is_null() {
+        // Fallback: anywhere in memory, MEM_COMMIT | MEM_RESERVE
+        ptr = VirtualAlloc(std::ptr::null_mut(), dw_size, 0x3000, win32_prot);
+    }
+    log_call(&format!("XMemVirtualAlloc(addr=0x{:x}, sz=0x{dw_size:x}, xbox_type=0x{fl_allocation_type:x}, xbox_prot=0x{fl_protect:x}) -> 0x{:x}", lp_address as usize, ptr as usize));
+    ptr
+}
+
+
+#[no_mangle]
+pub unsafe extern "system" fn XMemAllocatePhysicalPages(
+    flags: u32,
+    p_num_pages: *mut usize,
+    p_page_entries: *mut usize,
+) -> i32 {
+    static NEXT_PHYS_PAGE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0x10000);
+    if p_num_pages.is_null() {
+        return 0;
+    }
+    let num_pages = *p_num_pages;
+    if !p_page_entries.is_null() {
+        let base_pfn = NEXT_PHYS_PAGE.fetch_add(num_pages, std::sync::atomic::Ordering::Relaxed);
+        for i in 0..num_pages {
+            *p_page_entries.add(i) = base_pfn + i;
+        }
+    }
+    log_call(&format!("XMemAllocatePhysicalPages(flags=0x{flags:x}, pages={num_pages}) -> 1"));
+    1
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XMemFreePhysicalPages(
+    flags: u32,
+    p_num_pages: *mut usize,
+    _p_page_entries: *const usize,
+) -> i32 {
+    let pages = if !p_num_pages.is_null() { *p_num_pages } else { 0 };
+    log_call(&format!("XMemFreePhysicalPages(flags=0x{flags:x}, pages={pages})"));
+    1
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XMemIsToolsMemAvailable() -> i32 {
+    log_call("XMemIsToolsMemAvailable() -> 0");
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XMemMapPhysicalPages(
+    lp_address: *mut c_void,
+    page_count: usize,
+    _physical_address_ptr: *const usize,
+    _fl_protect: u32,
+) -> usize {
+    let size = if page_count > 0 { page_count * 64 * 1024 } else { 64 * 1024 };
+    if !lp_address.is_null() {
+        VirtualAlloc(lp_address, size, 0x1000 /* MEM_COMMIT */, 0x04 /* PAGE_READWRITE */);
+    }
+    log_call(&format!("XMemMapPhysicalPages(addr=0x{:x}, pages={page_count}) -> ok", lp_address as usize));
+    if !lp_address.is_null() { lp_address as usize } else { 1 }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XMemMapPhysicalPagesScatter(
+    lp_address: *mut c_void,
+    page_count: usize,
+    _page_numbers: *const usize,
+    _fl_protect: u32,
+) -> usize {
+    let size = if page_count > 0 { page_count * 64 * 1024 } else { 64 * 1024 };
+    if !lp_address.is_null() {
+        VirtualAlloc(lp_address, size, 0x1000 /* MEM_COMMIT */, 0x04 /* PAGE_READWRITE */);
+    }
+    log_call(&format!("XMemMapPhysicalPagesScatter(addr=0x{:x}, pages={page_count}) -> ok", lp_address as usize));
+    if !lp_address.is_null() { lp_address as usize } else { 1 }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

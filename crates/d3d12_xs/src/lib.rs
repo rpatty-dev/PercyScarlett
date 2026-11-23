@@ -2,6 +2,11 @@ pub mod compute_exec;
 pub mod rdna2_hlsl;
 pub mod rdna2_isa;
 
+#[cfg(windows)]
+#[link(name = "user32")]
+extern "system" {}
+
+
 use std::ffi::{c_void, CString};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -572,7 +577,7 @@ pub unsafe extern "system" fn D3D12EnableExperimentalFeatures(
 
 #[repr(C)]
 struct DeviceXProxy {
-    vtbl: *const [*const c_void; 128],
+    vtbl: *const [*const c_void; 256],
     inner: *mut c_void,
     refs: AtomicU32,
 }
@@ -660,7 +665,7 @@ unsafe extern "system" fn xbox_slot_unimpl() -> i32 {
 macro_rules! device_fwd_slot {
     ($name:ident, $slot:literal) => {
         #[unsafe(naked)]
-        unsafe extern "system" fn $name() {
+        pub(crate) unsafe extern "system" fn $name() {
             std::arch::naked_asm!(
                 "mov rcx, qword ptr [rcx + 8]",
                 "mov rax, qword ptr [rcx]",
@@ -714,6 +719,9 @@ mod dev_fwd {
     device_fwd_slot!(s41, 41);
     device_fwd_slot!(s42, 42);
     device_fwd_slot!(s43, 43);
+    device_fwd_slot!(s44, 44);
+    device_fwd_slot!(s45, 45);
+    device_fwd_slot!(s46, 46);
     pub const SLOTS: [*const c_void; 41] = [
         s3 as *const c_void, s4 as *const c_void, s5 as *const c_void, s6 as *const c_void,
         s7 as *const c_void, s8 as *const c_void, s9 as *const c_void, s10 as *const c_void,
@@ -909,7 +917,8 @@ unsafe fn patch_object(obj: *mut c_void, n_slots: usize, overrides: &[(usize, us
     let newv = match v.iter().find(|&&(o, _)| o == orig) {
         Some(&(_, n)) => n,
         None => {
-            let mut tbl: Vec<usize> = std::slice::from_raw_parts(orig as *const usize, n_slots).to_vec();
+            let count = n_slots.max(64);
+            let mut tbl: Vec<usize> = std::slice::from_raw_parts(orig as *const usize, count).to_vec();
             let mut origs = OBJ_ORIG.lock().unwrap();
             for &(slot, f) in overrides {
                 origs.push((0, slot, tbl[slot]));
@@ -1048,13 +1057,13 @@ unsafe fn big_struct_get(slot: usize, a: *mut c_void, b: *mut c_void, ra: usize)
 /// 8-byte-struct getter at `slot`: console (this) -> RAX value, or PC (this, ret) -> ret.
 unsafe fn small_struct_get(slot: usize, this: *mut c_void, b: *mut u64, ra: usize) -> u64 {
     let f: unsafe extern "system" fn(*mut c_void, *mut u64) -> *mut u64 = std::mem::transmute(orig_slot(this, slot));
-    if caller_is_guest(ra) {
-        let mut v = 0u64;
-        f(this, &mut v);
-        v
-    } else {
-        f(this, b) as u64
+    let mut handle = 0u64;
+    f(this, &mut handle);
+    log_d3d12(&format!("[d3d12x] small_struct_get(slot={slot}, this={this:p}, guest={}) -> {handle:#x}", caller_is_guest(ra)));
+    if !caller_is_guest(ra) && !b.is_null() {
+        *b = handle;
     }
+    handle
 }
 unsafe extern "system" fn res_get_desc_d(a: *mut c_void, b: *mut c_void, ra: usize) -> *mut c_void { big_struct_get(10, a, b, ra) }
 unsafe extern "system" fn heap_get_desc_d(a: *mut c_void, b: *mut c_void, ra: usize) -> *mut c_void { big_struct_get(8, a, b, ra) }
@@ -1076,14 +1085,33 @@ unsafe extern "system" fn res_gpu_va(this: *mut c_void) -> u64 {
 /// Device slots 18/19: Create{Shader Resource,Unordered Access}View — views of mirrored buffers
 /// read the twin.
 unsafe extern "system" fn devx_create_srv(this: *mut c_void, res: *mut c_void, desc: *const c_void, h: usize) {
+    if h == 0 {
+        log_d3d12("[d3d12x] CreateShaderResourceView called with NULL dest handle! Ignoring.");
+        return;
+    }
     let (inner, f) = devx_inner_fn(this, 18);
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *const c_void, usize) = std::mem::transmute(f);
     f(inner, mirror::sub(res), desc, h)
 }
 unsafe extern "system" fn devx_create_uav(this: *mut c_void, res: *mut c_void, ctr: *mut c_void, desc: *const c_void, h: usize) {
+    if h == 0 {
+        log_d3d12("[d3d12x] CreateUnorderedAccessView called with NULL dest handle! Ignoring.");
+        return;
+    }
+    let real_res = mirror::sub(res);
+    let mut uav_buf_desc = [0u32; 8];
+    let actual_desc = if desc.is_null() && !real_res.is_null() {
+        uav_buf_desc[0] = 39; // DXGI_FORMAT_R32_TYPELESS
+        uav_buf_desc[1] = 1;  // D3D12_UAV_DIMENSION_BUFFER
+        uav_buf_desc[4] = 0x1000; // num_elements
+        uav_buf_desc[7] = 1;  // D3D12_BUFFER_UAV_FLAG_RAW
+        uav_buf_desc.as_ptr() as *const c_void
+    } else {
+        desc
+    };
     let (inner, f) = devx_inner_fn(this, 19);
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, *const c_void, usize) = std::mem::transmute(f);
-    f(inner, mirror::sub(res), mirror::sub(ctr), desc, h)
+    f(inner, real_res, mirror::sub(ctr), actual_desc, h)
 }
 
 unsafe fn patch_resource(r: *mut c_void) {
@@ -1094,9 +1122,28 @@ unsafe fn patch_resource(r: *mut c_void) {
 unsafe extern "system" fn devx_create_descriptor_heap(this: *mut c_void, desc: *const c_void, riid: *const c_void, out: *mut *mut c_void) -> i32 {
     let (inner, f) = devx_inner_fn(this, 14);
     let f: unsafe extern "system" fn(*mut c_void, *const c_void, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(f);
-    let hr = f(inner, desc, riid, out);
-    if !desc.is_null() {
+    let mut clamped_desc = [0u32; 4];
+    let actual_desc = if !desc.is_null() {
         let d = desc as *const u32;
+        let heap_type = *d;
+        let count = *d.add(1);
+        let flags = *d.add(2);
+        let node = *d.add(3);
+        // PC D3D12 limits shader-visible CBV_SRV_UAV heaps to 1,000,000 descriptors.
+        // Scarlett consoles allow larger allocations, which triggers E_INVALIDARG on PC drivers.
+        if heap_type == 0 && (flags & 1) != 0 && count > 1_000_000 {
+            log_d3d12(&format!("[d3d12x] Clamping shader-visible CBV_SRV_UAV descriptor count from {count} to 1000000"));
+            clamped_desc = [heap_type, 1_000_000, flags, node];
+            clamped_desc.as_ptr() as *const c_void
+        } else {
+            desc
+        }
+    } else {
+        desc
+    };
+    let hr = f(inner, actual_desc, riid, out);
+    if !desc.is_null() {
+        let d = actual_desc as *const u32;
         log_d3d12(&format!("[d3d12x] CreateDescriptorHeap type={} n={} flags={:#x} node={} -> {:08x}", *d, *d.add(1), *d.add(2), *d.add(3), hr as u32));
     }
     if hr >= 0 && !out.is_null() {
@@ -1727,12 +1774,23 @@ unsafe extern "system" fn devx_create_command_list(
     riid: *const c_void,
     out: *mut *mut c_void,
 ) -> i32 {
+    const IID_CMD_LIST: [u8; 16] = [
+        0x0f, 0x0d, 0x16, 0x5b, 0x1b, 0xac, 0x85, 0x41, 0x8b, 0xa8, 0xb3, 0xae, 0x42, 0xa5, 0xa4, 0x55,
+    ];
     let inner = (*(this as *const DeviceXProxy)).inner;
     let vt = *(inner as *const *const *const c_void);
     let f: unsafe extern "system" fn(*mut c_void, u32, u32, *mut c_void, *mut c_void, *const c_void, *mut *mut c_void) -> i32 =
         std::mem::transmute(*vt.add(12));
     let (ty, node) = if desc.is_null() { (0, 0) } else { (*desc, *desc.add(1)) };
-    let hr = f(inner, node, ty, allocator, replay::unwrap_pso(pso), riid, out);
+    let unwrapped_pso = replay::unwrap_pso(pso);
+    let target_riid = if riid.is_null() { IID_CMD_LIST.as_ptr() as *const c_void } else { riid };
+    let mut hr = f(inner, 0, ty, allocator, unwrapped_pso, target_riid, out);
+    if hr < 0 {
+        hr = f(inner, 0, ty, allocator, unwrapped_pso, IID_CMD_LIST.as_ptr() as *const c_void, out);
+    }
+    if hr < 0 && node != 0 {
+        hr = f(inner, node, ty, allocator, unwrapped_pso, IID_CMD_LIST.as_ptr() as *const c_void, out);
+    }
     if hr >= 0 && !out.is_null() {
         if std::env::var("PERCY_CLX_OFF").is_ok() { patch_command_list(*out); } else { *out = console_list::wrap(*out); }
     }
@@ -1746,7 +1804,7 @@ unsafe fn wrap_device_pointer(inner: *mut c_void) -> *mut c_void {
     if inner.is_null() {
         return inner;
     }
-    let mut vtbl = [xbox_slot_unimpl as *const c_void; 128];
+    let mut vtbl = [xbox_slot_unimpl as *const c_void; 256];
     vtbl[0] = proxy_qi as *const c_void;
     vtbl[1] = proxy_add_ref as *const c_void;
     vtbl[2] = proxy_release as *const c_void;
@@ -1770,7 +1828,7 @@ unsafe fn wrap_device_pointer(inner: *mut c_void) -> *mut c_void {
     vtbl[8] = devx_create_command_queue as *const c_void;
     let leaked_vtbl = Box::leak(Box::new(vtbl));
     let proxy = Box::new(DeviceXProxy {
-        vtbl: leaked_vtbl as *const [*const c_void; 128],
+        vtbl: leaked_vtbl as *const [*const c_void; 256],
         inner,
         refs: AtomicU32::new(1),
     });
@@ -1930,6 +1988,14 @@ pub struct Guid(pub u32, pub u16, pub u16, pub [u8; 8]);
 #[no_mangle]
 #[allow(non_upper_case_globals)]
 pub static IID_ID3D12Device: Guid = Guid(0x189819f1, 0x1db6, 0x4b57, [0xbe, 0x54, 0x18, 0x21, 0x33, 0x9b, 0x85, 0xf7]);
+
+#[no_mangle]
+pub unsafe extern "system" fn D3D12ConfigureVirtualMemoryX(
+    _device: *mut c_void,
+    _config: *const c_void,
+) -> i32 {
+    0 // S_OK
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn D3D12XboxCreateDevice(

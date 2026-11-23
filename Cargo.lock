@@ -134,6 +134,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "amd_fidelityfx_loader_xbox"
+version = "0.1.0"
+
+[[package]]
 name = "android-activity"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -453,6 +457,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "bink2scarlett"
+version = "0.1.0"
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -648,6 +656,10 @@ checksum = "0ced0551234e87afee12411d535648dd89d2e7f34c78b753395567aff3d447ff"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "chad"
+version = "0.1.0"
 
 [[package]]
 name = "clipboard-win"
@@ -849,6 +861,9 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "dstorage"
 version = "0.1.0"
+dependencies = [
+ "flate2",
+]
 
 [[package]]
 name = "ecolor"
@@ -1703,6 +1718,10 @@ name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+
+[[package]]
+name = "libhttpclient_gdk"
+version = "0.1.0"
 
 [[package]]
 name = "libloading"
@@ -3943,6 +3962,10 @@ version = "0.1.0"
 
 [[package]]
 name = "xaudio2_9"
+version = "0.1.0"
+
+[[package]]
+name = "xboxbvhbuilder"
 version = "0.1.0"
 
 [[package]]

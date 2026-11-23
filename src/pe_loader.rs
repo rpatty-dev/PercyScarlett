@@ -51,10 +51,19 @@ extern "system" {
 pub fn rewrite_xbox_vfs_path(raw: &str, game_dir: &Path, save_root: &Path) -> Option<std::path::PathBuf> {
     let trimmed = raw.trim_start_matches(r"\\?\");
     let lower = trimmed.to_ascii_lowercase();
+    let gd_lower = game_dir.to_string_lossy().to_ascii_lowercase();
+    let gd_norm = gd_lower.trim_end_matches(['\\', '/']);
+    if !gd_norm.is_empty() && (lower == gd_norm || lower.starts_with(&format!("{gd_norm}\\")) || lower.starts_with(&format!("{gd_norm}/"))) {
+        return None;
+    }
     let (rest, base) = if let Some(r) = lower.strip_prefix("g:\\").or_else(|| lower.strip_prefix("g:/")) {
         (&trimmed[trimmed.len() - r.len()..], game_dir.to_path_buf())
     } else if let Some(r) = lower.strip_prefix("game:\\").or_else(|| lower.strip_prefix("game:/")).or_else(|| lower.strip_prefix("game:")) {
         (&trimmed[trimmed.len() - r.len()..], game_dir.to_path_buf())
+    } else if let Some(r) = lower.strip_prefix("common:\\").or_else(|| lower.strip_prefix("common:/")).or_else(|| lower.strip_prefix("common:")) {
+        (&trimmed[trimmed.len() - r.len()..], game_dir.join("common"))
+    } else if let Some(r) = lower.strip_prefix("platform:\\").or_else(|| lower.strip_prefix("platform:/")).or_else(|| lower.strip_prefix("platform:")) {
+        (&trimmed[trimmed.len() - r.len()..], game_dir.join("platform"))
     } else if let Some(r) = lower.strip_prefix("t:\\").or_else(|| lower.strip_prefix("t:/")) {
         (&trimmed[trimmed.len() - r.len()..], save_root.join("T"))
     } else if let Some(r) = lower.strip_prefix("s:\\").or_else(|| lower.strip_prefix("s:/")) {
@@ -75,7 +84,15 @@ fn vfs_roots() -> (std::path::PathBuf, std::path::PathBuf) {
     let game_dir = GUEST_EXE_PATH
         .lock()
         .ok()
-        .and_then(|g| g.as_ref().and_then(|p| Path::new(p).parent().map(|d| d.to_path_buf())))
+        .and_then(|g| g.as_ref().and_then(|p| {
+            let path = Path::new(p);
+            let parent = path.parent()?;
+            if parent.as_os_str().is_empty() {
+                std::env::current_dir().ok()
+            } else {
+                std::fs::canonicalize(parent).ok().or_else(|| Some(parent.to_path_buf()))
+            }
+        }))
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
     // Same data root as the runtime shims: `percy_data_dir.txt` next to the exe, else %LOCALAPPDATA%.
     let save_root = std::env::current_exe()
@@ -617,6 +634,24 @@ unsafe extern "system" fn percy_get_module_file_name_a(module: usize, buf: *mut 
         }
     }
     GetModuleFileNameA(module, buf, size)
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn percy_virtual_free(addr: *mut c_void, size: usize, free_type: u32) -> i32 {
+    extern "system" {
+        fn VirtualFree(addr: *mut c_void, size: usize, free_type: u32) -> i32;
+    }
+    // Xbox memory management uses 0x8002 (MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)
+    // with non-zero size to split/unmap placeholders. On Windows without placeholder setup,
+    // this fails with ERROR_INVALID_PARAMETER (487). Handle it cleanly by returning 1 (success).
+    if free_type == 0x8002 || (free_type & 0x0002 != 0) {
+        return 1;
+    }
+    // For standard MEM_RELEASE (0x8000), dwSize must be 0 in Win32
+    if free_type & 0x8000 != 0 && size != 0 {
+        return 1;
+    }
+    VirtualFree(addr, size, free_type)
 }
 
 /// Writes to stderr via `WriteFile` (no Rust std TLS; safe while the guest owns TLS slot 0).
@@ -1265,6 +1300,115 @@ unsafe fn arm_breakpoints(base: *mut u8, size: usize) {
 }
 
 #[cfg(windows)]
+static DUMMY_VTBL_ADDR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(windows)]
+unsafe fn get_or_create_dummy_vtable() -> usize {
+    let existing = DUMMY_VTBL_ADDR.load(std::sync::atomic::Ordering::Acquire);
+    if existing != 0 {
+        return existing;
+    }
+    // Allocate executable stub: xor eax, eax; ret (48 31 c0 c3)
+    let stub_mem = VirtualAlloc(0, 4096, 0x3000, 0x40);
+    if stub_mem == 0 {
+        return 0;
+    }
+    let code: [u8; 4] = [0x48, 0x31, 0xc0, 0xc3];
+    std::ptr::copy_nonoverlapping(code.as_ptr(), stub_mem as *mut u8, code.len());
+
+    // Allocate dummy vtable: 512 entries pointing to stub_mem
+    let vtbl_mem = VirtualAlloc(0, 4096, 0x3000, 0x04) as *mut usize;
+    if vtbl_mem.is_null() {
+        return 0;
+    }
+    for i in 0..512 {
+        *vtbl_mem.add(i) = stub_mem;
+    }
+    let addr = vtbl_mem as usize;
+    DUMMY_VTBL_ADDR.store(addr, std::sync::atomic::Ordering::Release);
+    addr
+}
+
+#[cfg(windows)]
+fn is_readable_addr(p: u64) -> bool {
+    if p < 0x10000 || p > 0x7fff_ffff_ffff { return false; }
+    extern "system" {
+        fn VirtualQuery(a: *const c_void, b: *mut u8, n: usize) -> usize;
+    }
+    unsafe {
+        let mut mbi = [0u8; 48];
+        if VirtualQuery(p as *const c_void, mbi.as_mut_ptr(), 48) == 0 {
+            return false;
+        }
+        let state = *(mbi.as_ptr().add(0x20) as *const u32);
+        let prot = *(mbi.as_ptr().add(0x24) as *const u32);
+        state == 0x1000 && (prot & 0x6e != 0) && (prot & 0x100 == 0)
+    }
+}
+
+#[cfg(windows)]
+fn is_writable_addr(p: u64) -> bool {
+    if p < 0x10000 || p > 0x7fff_ffff_ffff { return false; }
+    extern "system" {
+        fn VirtualQuery(a: *const c_void, b: *mut u8, n: usize) -> usize;
+    }
+    unsafe {
+        let mut mbi = [0u8; 48];
+        if VirtualQuery(p as *const c_void, mbi.as_mut_ptr(), 48) == 0 {
+            return false;
+        }
+        let state = *(mbi.as_ptr().add(0x20) as *const u32);
+        let prot = *(mbi.as_ptr().add(0x24) as *const u32);
+        state == 0x1000 && (prot & 0xcc != 0) && (prot & 0x100 == 0)
+    }
+}
+
+#[cfg(windows)]
+unsafe fn decode_call_len(mut ptr: *const u8) -> Option<usize> {
+    let mut len = 0;
+    while len < 15 && matches!(*ptr, 0x40..=0x4F | 0x66 | 0x67) {
+        ptr = ptr.add(1);
+        len += 1;
+    }
+    if *ptr != 0xFF {
+        return None;
+    }
+    ptr = ptr.add(1);
+    len += 1;
+    let modrm = *ptr;
+    ptr = ptr.add(1);
+    len += 1;
+    let mod_bits = (modrm >> 6) & 3;
+    let reg_bits = (modrm >> 3) & 7;
+    let rm_bits = modrm & 7;
+    if reg_bits != 2 {
+        return None;
+    }
+    if mod_bits == 3 {
+        return Some(len);
+    }
+    let has_sib = rm_bits == 4;
+    let sib_base = if has_sib {
+        let b = (*ptr) & 7;
+        ptr = ptr.add(1);
+        len += 1;
+        Some(b)
+    } else {
+        None
+    };
+    if mod_bits == 0 {
+        if (has_sib && sib_base == Some(5)) || (!has_sib && rm_bits == 5) {
+            len += 4;
+        }
+    } else if mod_bits == 1 {
+        len += 1;
+    } else if mod_bits == 2 {
+        len += 4;
+    }
+    Some(len)
+}
+
+#[cfg(windows)]
 unsafe extern "system" fn trace_veh(info: *const c_void) -> i32 {
     let er = *(info as *const *const u32);
     let code = *er;
@@ -1302,6 +1446,366 @@ unsafe extern "system" fn trace_veh(info: *const c_void) -> i32 {
                 *fl |= 0x100; // TF: single-step, then re-insert int3
             }
             return -1; // EXCEPTION_CONTINUE_EXECUTION
+        } else {
+            let g = GUEST_IMAGE_BASE.load(std::sync::atomic::Ordering::Acquire);
+            let rva = rip.saturating_sub(g);
+            raw_stderr(&format!("[debugbreak] handled at 0x{:x} (guest+0x{:x})\n", rip, rva));
+            if rva == 0x1e1d4e0 {
+                let r15 = *ctx.add(0xF0 / 8) as usize;
+                let sz = r15.max(0x100000);
+                let buf = VirtualAlloc(0, sz, 0x3000, 0x04);
+                *ctx.add(0x78 / 8) = buf as u64;
+                *ctx.add(0xF8 / 8) = (g + 0x1e1d512) as u64;
+                raw_stderr(&format!("[debugbreak] rescued G+1e1d4e0 -> provided {sz:#x} buffer at {buf:#x}\n"));
+                return -1;
+            }
+            if rva == 0x1e1d390 {
+                let r15 = *ctx.add(0xF0 / 8) as usize;
+                let sz = r15.max(0x100000);
+                let buf = VirtualAlloc(0, sz, 0x3000, 0x04);
+                *ctx.add(0x78 / 8) = buf as u64;
+                *ctx.add(0xF8 / 8) = (g + 0x1e1d373) as u64;
+                raw_stderr(&format!("[debugbreak] rescued G+1e1d390 -> provided {sz:#x} buffer at {buf:#x}\n"));
+                return -1;
+            }
+            if rva == 0x1d5cc69 {
+                // Assertion failure: cx was <= 0x3e7 (expected >= 1000).
+                // Set eax = 1005 (so ebx = eax - 1000 = 5), skip `add eax, 5` directly to `ret` at +4
+                *ctx.add(0x78 / 8) = 1005;
+                *ctx.add(0xF8 / 8) = (rip + 4) as u64;
+                return -1;
+            }
+            if rva == 0x2224517 {
+                // Missing gameconfig.zmt failure branch. Clean epilogue:
+                // pop registers and return
+                *ctx.add(0xF8 / 8) = (rip + 1) as u64; // step to 0x142224518 add rsp, 0xc8
+                return -1;
+            }
+            if rva == 0xcc2936 {
+                // rcx was null. Cleanly return from 0x140cc2840:
+                // add rsp, 0x38; pop rbx; pop rdi; pop rsi; pop r14; ret
+                let mut cur_rsp = *ctx.add(0x98 / 8) + 0x38;
+                let rbx = *(cur_rsp as *const u64); cur_rsp += 8;
+                let rdi = *(cur_rsp as *const u64); cur_rsp += 8;
+                let rsi = *(cur_rsp as *const u64); cur_rsp += 8;
+                let r14 = *(cur_rsp as *const u64); cur_rsp += 8;
+                let ret_addr = *(cur_rsp as *const u64); cur_rsp += 8;
+                *ctx.add(0x90 / 8) = rbx; // rbx
+                *ctx.add(0xB0 / 8) = rdi; // rdi
+                *ctx.add(0xA8 / 8) = rsi; // rsi
+                *ctx.add(0xE8 / 8) = r14; // r14
+                *ctx.add(0x98 / 8) = cur_rsp; // rsp
+                *ctx.add(0xF8 / 8) = ret_addr; // rip
+                *ctx.add(0x78 / 8) = 0; // rax = 0
+                raw_stderr(&format!("[debugbreak] handled null rcx at G+cc2936 -> returned 0 to {ret_addr:#x}\n"));
+                return -1;
+            }
+            *ctx.add(0xF8 / 8) = (rip + 1) as u64;
+            return -1; // EXCEPTION_CONTINUE_EXECUTION
+        }
+    }
+    if code == 0xC000_0005 {
+        let ep = info as *const *const u8;
+        let er_ptr = *ep;
+        let ctx = *(ep.add(1)) as *mut u64;
+        let num_params = *(er_ptr.add(24) as *const u32);
+        let op = if num_params >= 1 { *(er_ptr.add(32) as *const usize) } else { 0 };
+        let fault_addr = if num_params >= 2 { *(er_ptr.add(40) as *const usize) } else { 0 };
+        let rip = *ctx.add(0xF8 / 8);
+        let rsp = *ctx.add(0x98 / 8);
+        let guest = GUEST_IMAGE_BASE.load(std::sync::atomic::Ordering::Acquire);
+        let dummy_vtbl = get_or_create_dummy_vtable();
+
+        // 1. Check if execute fault on invalid address (e.g. rip is invalid or op == 8)
+        if (op == 8 || rip < 0x10000 || rip == 0xffff_ffff_ffff_ffff) && is_readable_addr(rsp) {
+            let ret_addr = *(rsp as *const u64);
+            if is_readable_addr(ret_addr) {
+                *ctx.add(0x98 / 8) = rsp + 8; // pop stack
+                *ctx.add(0x78 / 8) = 0;       // rax = 0 (S_OK)
+                *ctx.add(0xF8 / 8) = ret_addr;
+                raw_stderr(&format!(
+                    "[veh] 0xc0000005 execute fault at {rip:#x}. Simulating ret to {ret_addr:#x}, set rax=0 (S_OK)\n"
+                ));
+                return -1; // EXCEPTION_CONTINUE_EXECUTION
+            }
+        }
+
+        // 2. Check if reading an invalid vtable during an indirect call (e.g. G+1d8e515 call [rax+0x40])
+        if is_readable_addr(rip) {
+            let call_len = if rip == guest as u64 + 0x1d8e515 {
+                Some(3)
+            } else {
+                decode_call_len(rip as *const u8)
+            };
+
+            if let Some(len) = call_len {
+                let rcx = *ctx.add(0x80 / 8);
+                if dummy_vtbl != 0 && is_writable_addr(rcx) {
+                    *(rcx as *mut usize) = dummy_vtbl;
+                }
+                *ctx.add(0xF8 / 8) = rip + len as u64;
+                *ctx.add(0x78 / 8) = 0; // rax = 0 (S_OK)
+                raw_stderr(&format!(
+                    "[veh] 0xc0000005 vtable call fault at {rip:#x} (G+{:#x}), target={fault_addr:#x}. Stepped RIP +{len}, set rax=0 (S_OK)\n",
+                    rip.saturating_sub(guest as u64)
+                ));
+                return -1; // EXCEPTION_CONTINUE_EXECUTION
+            }
+
+            // 3. Check if mov instruction loading vtable failed on invalid pointer
+            let p = rip as *const u8;
+            if *p == 0x48 && *p.add(1) == 0x8B {
+                let modrm = *p.add(2);
+                let dst_reg = (modrm >> 3) & 7;
+                let mod_bits = (modrm >> 6) & 3;
+                let rm_bits = modrm & 7;
+                let has_sib = rm_bits == 4;
+                let mut mov_len = 3 + if has_sib { 1 } else { 0 };
+                if mod_bits == 1 {
+                    mov_len += 1;
+                } else if mod_bits == 2 || (mod_bits == 0 && (rm_bits == 5 || (has_sib && (*p.add(3) & 7) == 5))) {
+                    mov_len += 4;
+                }
+                if dst_reg == 0 { // RAX
+                    let next_p = p.add(mov_len);
+                    let is_call_next = if is_readable_addr(next_p as u64) {
+                        *next_p == 0xFF && ((*next_p.add(1) >> 3) & 7) == 2
+                    } else {
+                        false
+                    };
+                    if is_call_next {
+                        if dummy_vtbl != 0 {
+                            *ctx.add(0x78 / 8) = dummy_vtbl as u64;
+                        }
+                        *ctx.add(0xF8 / 8) = rip + mov_len as u64;
+                        raw_stderr(&format!(
+                            "[veh] 0xc0000005 mov vtable load fault at {rip:#x} (G+{:#x}). Set rax=dummy_vtbl, stepped RIP +{mov_len}\n",
+                            rip.saturating_sub(guest as u64)
+                        ));
+                        return -1; // EXCEPTION_CONTINUE_EXECUTION
+                    }
+                }
+            }
+        }
+
+        // 3a1. Null rcx at G+1cf0cbc (mov [rcx], 0xff in inner init loop called from G+1cff4b8)
+        if rip == guest as u64 + 0x1cf0cbc && *ctx.add(0x80 / 8) == 0 {
+            // Allocate 0x100000 for this table so [rcx] to [rcx + 0xb8 * count] is valid memory
+            let buf = VirtualAlloc(0, 0x100000, 0x3000, 0x04);
+            *ctx.add(0x80 / 8) = buf as u64; // rcx = buf
+            *ctx.add(0xA8 / 8) = buf as u64; // rsi = buf (since 0x141cf0cb9 was mov rsi, rcx)
+            let rip_table_ptr = (guest + 0x71bf8e0) as *mut usize;
+            if is_writable_addr(rip_table_ptr as u64) {
+                *rip_table_ptr = buf;
+            }
+            raw_stderr(&format!(
+                "[veh] 0xc0000005 null rcx at G+1cf0cbc -> allocated buf {buf:#x}, stored in [0x1471bf8e0], retrying\n"
+            ));
+            return -1; // EXCEPTION_CONTINUE_EXECUTION
+        }
+
+        // 3a1b. Null heap rbx at G+1f67809 (mov [rbx + 0x10], r14d in heap allocator init)
+        if (rip == guest as u64 + 0x1f67809 || (rip >= guest as u64 + 0x1f67770 && rip <= guest as u64 + 0x1f67850)) && *ctx.add(0x90 / 8) == 0 {
+            static HEAP_EMERGENCY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let hbuf = if HEAP_EMERGENCY.load(std::sync::atomic::Ordering::Acquire) != 0 {
+                HEAP_EMERGENCY.load(std::sync::atomic::Ordering::Acquire)
+            } else {
+                let p = VirtualAlloc(0, 0x10000000, 0x3000, 0x04);
+                HEAP_EMERGENCY.store(p, std::sync::atomic::Ordering::Release);
+                p
+            };
+            *ctx.add(0x90 / 8) = (hbuf + 0x40) as u64; // rbx
+            *ctx.add(0x88 / 8) = (hbuf + 0x40) as u64; // rdx
+            raw_stderr(&format!("[veh] 0xc0000005 rescued null heap rbx at G+1f67809 -> rbx={hbuf:#x}\n"));
+            return -1;
+        }
+
+        // 3a1c. DirectStorage queue dispatch at G+0x28c9a08: mov rax, [rcx]; call [rax+0x18]
+        if rip == guest as u64 + 0x28c9a08 {
+            let rsi = *ctx.add(0xA8 / 8); // rsi = streaming device object
+            let rcx = *ctx.add(0x80 / 8); // rcx = [rsi + 0x18]
+            if rcx == 0 {
+                let q_obj = VirtualAlloc(0, 0x1000, 0x3000, 0x04) as usize;
+                *(q_obj as *mut usize) = dummy_vtbl;
+                *ctx.add(0x80 / 8) = q_obj as u64; // rcx = q_obj
+                *ctx.add(0x78 / 8) = dummy_vtbl as u64; // rax = dummy_vtbl
+                if is_writable_addr(rsi + 0x18) {
+                    *((rsi + 0x18) as *mut usize) = q_obj;
+                }
+                *ctx.add(0xF8 / 8) = rip + 3; // step over mov rax, [rcx] to call [rax+0x18]
+                raw_stderr(&format!(
+                    "[veh] G+0x28c9a08: null queue at rsi={rsi:#x}+0x18, assigned fallback queue {q_obj:#x}\n"
+                ));
+                return -1;
+            }
+        }
+
+        // 3a2. Uninitialized global at G+5eb24bf (mov rax, [rax+0x18] where rax == 0 from [0x1475df128])
+        if rip == guest as u64 + 0x5eb24bf {
+            // Epilogue of 0x145eb2480: mov dword ptr [rip + 0x2ec86a8], eax; ret
+            // Simply set eax = 0, store to [0x148d7ab7d], pop ret address from stack
+            let target_ptr = (guest + 0x8d7ab7d) as *mut u32;
+            if is_writable_addr(target_ptr as u64) {
+                *target_ptr = 0;
+            }
+            if is_readable_addr(rsp) {
+                let ret_addr = *(rsp as *const u64);
+                *ctx.add(0x98 / 8) = rsp + 8; // pop ret
+                *ctx.add(0xF8 / 8) = ret_addr;
+                *ctx.add(0x78 / 8) = 0; // rax = 0
+                raw_stderr(&format!(
+                    "[veh] 0xc0000005 null global at G+5eb24bf -> simulated ret to {ret_addr:#x}\n"
+                ));
+                return -1; // EXCEPTION_CONTINUE_EXECUTION
+            }
+        }
+
+        // 3b. Pool allocator fault at G+55ac264 (mov r10, [rax+0x30] with rax==0)
+        if rip == guest as u64 + 0x55ac264 {
+            *ctx.add(0xF8 / 8) = guest as u64 + 0x55ac2a1; // jump to mov [rcx], r8 (r8=0); pop rbx/rdi/rsi; ret
+            raw_stderr("[veh] 0xc0000005 pool alloc fault at G+55ac264: skipped to exit with null\n");
+            return -1; // EXCEPTION_CONTINUE_EXECUTION
+        }
+
+        // 3c. Null rdi at G+cc2861 (test byte ptr [rdi+10h], 4)
+        if rip == guest as u64 + 0xcc2861 {
+            *ctx.add(0xF8 / 8) = guest as u64 + 0xcc288d;
+            raw_stderr("[veh] 0xc0000005 at G+cc2861: rdi was null, jumped to G+cc288d\n");
+            return -1; // EXCEPTION_CONTINUE_EXECUTION
+        }
+
+        // 3d. Null rcx at G+14a6639 (test byte ptr [rcx+10h], 4)
+        if rip == guest as u64 + 0x14a6639 && *ctx.add(0x80 / 8) == 0 {
+            let mut cur_rsp = *ctx.add(0x98 / 8) + 0x38;
+            let rbx = *(cur_rsp as *const u64); cur_rsp += 8;
+            let rdi = *(cur_rsp as *const u64); cur_rsp += 8;
+            let rsi = *(cur_rsp as *const u64); cur_rsp += 8;
+            let r14 = *(cur_rsp as *const u64); cur_rsp += 8;
+            let ret_addr = *(cur_rsp as *const u64); cur_rsp += 8;
+            *ctx.add(0x90 / 8) = rbx;
+            *ctx.add(0xB0 / 8) = rdi;
+            *ctx.add(0xA8 / 8) = rsi;
+            *ctx.add(0xE8 / 8) = r14;
+            *ctx.add(0x98 / 8) = cur_rsp;
+            *ctx.add(0xF8 / 8) = ret_addr;
+            *ctx.add(0x78 / 8) = 0; // rax = 0
+            raw_stderr(&format!("[veh] 0xc0000005 null rcx at G+14a6639 -> returned 0 to {ret_addr:#x}\n"));
+            return -1; // EXCEPTION_CONTINUE_EXECUTION
+        }
+
+        // 3e. Null rcx at G+24844a9 ([0x1475DF268])
+        if rip == guest as u64 + 0x24844a9 {
+            static GLOBAL_BUF: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let buf = if GLOBAL_BUF.load(std::sync::atomic::Ordering::Acquire) != 0 {
+                GLOBAL_BUF.load(std::sync::atomic::Ordering::Acquire)
+            } else {
+                let p = VirtualAlloc(0, 0x100000, 0x3000, 0x04);
+                GLOBAL_BUF.store(p, std::sync::atomic::Ordering::Release);
+                p
+            };
+            let global_ptr = (guest + 0x75df268) as *mut usize;
+            if is_writable_addr(global_ptr as u64) {
+                *global_ptr = buf;
+            }
+            *ctx.add(0x80 / 8) = buf as u64; // rcx = buf
+            raw_stderr(&format!("[veh] 0xc0000005 G+24844a9 null [0x1475DF268] -> allocated buf {buf:#x}, set rcx, retrying\n"));
+            return -1; // EXCEPTION_CONTINUE_EXECUTION
+        }
+
+        // 4. Check if crash happened in graphics driver (nvwgf2umx / D3D12Core) or CRT with guest on stack
+        let in_guest = rip >= guest as u64 && rip < guest as u64 + 0x10000000;
+        if !in_guest && is_readable_addr(rsp) {
+            for i in 0..128 {
+                let slot = (rsp + i * 8) as *const u64;
+                if !is_readable_addr(slot as u64) { break; }
+                let val = *slot;
+                if val == guest as u64 + 0x1cf0e38 {
+                    let buf = VirtualAlloc(0, 0x10000, 0x3000, 0x04);
+                    *ctx.add(0xD8 / 8) = buf as u64; // r12 = buf
+                    *ctx.add(0x98 / 8) = (slot as u64) + 8; // pop memset frame
+                    *ctx.add(0xF8 / 8) = guest as u64 + 0x1cf0e2b; // jump to mov rcx, r12
+                    raw_stderr(&format!(
+                        "[veh] 0xc0000005 null r12 at G+1cf0e38 -> allocated buf {buf:#x}, restarting at G+1cf0e2b\n"
+                    ));
+                    return -1; // EXCEPTION_CONTINUE_EXECUTION
+                }
+                if val == guest as u64 + 0x4ecc884 || val == guest as u64 + 0x2478c99 || val == guest as u64 + 0x1647616 {
+                    *ctx.add(0x98 / 8) = (slot as u64) + 8;
+                    *ctx.add(0xF8 / 8) = val;
+                    *ctx.add(0x78 / 8) = 0;
+                    raw_stderr(&format!(
+                        "[veh] 0xc0000005 driver fault recovered -> resumed at guest+{:#x}\n",
+                        val - guest as u64
+                    ));
+                    return -1; // EXCEPTION_CONTINUE_EXECUTION
+                }
+            }
+        }
+
+        // 5. Check if writing to null/near-null or uninitialized TLS object (e.g. G+0x19f5165 mov [rax+0x12338], rdi where rax == 0)
+        if rip == guest as u64 + 0x19f5165 || (op == 1 && (0x1000..0x200000).contains(&fault_addr) && *ctx.add(0x78 / 8) == 0 && rip >= guest as u64 && rip < guest as u64 + 0x10000000) {
+            static SCRATCH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let scratch = if SCRATCH.load(std::sync::atomic::Ordering::Acquire) != 0 {
+                SCRATCH.load(std::sync::atomic::Ordering::Acquire)
+            } else {
+                let p = VirtualAlloc(0, 0x400000, 0x3000, 0x04);
+                SCRATCH.store(p, std::sync::atomic::Ordering::Release);
+                p
+            };
+            *ctx.add(0x78 / 8) = scratch as u64;
+            let mut v: *mut *mut u8 = std::ptr::null_mut();
+            std::arch::asm!("mov {}, gs:[0x58]", out(reg) v, options(nostack, readonly, preserves_flags));
+            if !v.is_null() && !(*v).is_null() {
+                let tls_block = *v;
+                let slot = tls_block.add(0x12a8) as *mut usize;
+                *slot = scratch;
+            }
+            raw_stderr(&format!(
+                "[veh] 0xc0000005 TLS object write fault at {rip:#x} (G+{:#x}), fault_addr={fault_addr:#x}. Set rax=scratch (0x{scratch:x}), retrying\n",
+                rip.saturating_sub(guest as u64)
+            ));
+            return -1; // EXCEPTION_CONTINUE_EXECUTION
+        }
+
+        // 6. On-demand commit/protect on write/read fault to user-space memory (e.g. memcpy to reserved/uncommitted heap page)
+        if (op == 0 || op == 1) && fault_addr >= 0x10000 && fault_addr < 0x7fff_ffff_0000 {
+            let page_base = fault_addr & !0xFFF;
+            let mut old_protect = 0u32;
+            let vp = VirtualProtect(page_base as *mut c_void, 0x1000, 0x04, &mut old_protect);
+            if vp != 0 && (old_protect == 0x01 || old_protect == 0x02) {
+                raw_stderr(&format!(
+                    "[veh] 0xc0000005 VirtualProtect -> PAGE_READWRITE at {page_base:#x} (old={old_protect:#x})\n"
+                ));
+                return -1; // EXCEPTION_CONTINUE_EXECUTION
+            }
+            let mut p = VirtualAlloc(page_base, 0x1000, 0x1000 /* MEM_COMMIT */, 0x04 /* PAGE_READWRITE */);
+            if p == 0 {
+                p = VirtualAlloc(page_base, 0x1000, 0x3000 /* MEM_RESERVE | MEM_COMMIT */, 0x04 /* PAGE_READWRITE */);
+            }
+            if p != 0 {
+                raw_stderr(&format!(
+                    "[veh] 0xc0000005 on-demand committed page at {page_base:#x} (op={op}, fault_addr={fault_addr:#x}, rip={rip:#x})\n"
+                ));
+                return -1; // EXCEPTION_CONTINUE_EXECUTION
+            }
+            // If in host memcpy called from guest, recover stack to guest caller
+            if !in_guest && is_readable_addr(rsp) {
+                for i in 0..128 {
+                    let slot = (rsp + i * 8) as *const u64;
+                    if !is_readable_addr(slot as u64) { break; }
+                    let val = *slot;
+                    if val == guest as u64 + 0x51d22dd {
+                        *ctx.add(0x98 / 8) = (slot as u64) + 8;
+                        *ctx.add(0xF8 / 8) = val;
+                        *ctx.add(0x78 / 8) = *ctx.add(0x80 / 8); // rax = dest
+                        raw_stderr(&format!(
+                            "[veh] 0xc0000005 memcpy fault recovered -> resumed at guest+{:#x}\n",
+                            val - guest as u64
+                        ));
+                        return -1; // EXCEPTION_CONTINUE_EXECUTION
+                    }
+                }
+            }
         }
     }
     if code == 0xE06D_7363 || code == 0xC000_0005 {
@@ -1472,9 +1976,28 @@ fn resolve_shim_or_host_dll(dll_name: &str, shim_dir: &Path, cache: &mut HashMap
         "acphal.dll",
         "xapu.dll",
         "xcurl.dll",
+        "amd_fidelityfx_loader_xbox.dll",
+        "bink2scarlett.dll",
+        "libhttpclient.gdk.dll",
+        "xboxbvhbuilder.dll",
+        "chad.dll",
+        "xcrdapi.dll",
     ];
     let mut handle = 0usize;
-    if shim_names.contains(&key.as_str()) {
+    if key == "xcrdapi.dll" {
+        let p = shim_dir.join("XCRDAPI.dll");
+        if p.exists() {
+            if let Ok(cs) = CString::new(p.to_string_lossy().as_bytes()) {
+                handle = unsafe { LoadLibraryA(cs.as_ptr()) };
+            }
+        }
+        if handle == 0 {
+            let p = shim_dir.join("dstorage.dll");
+            if let Ok(cs) = CString::new(p.to_string_lossy().as_bytes()) {
+                handle = unsafe { LoadLibraryA(cs.as_ptr()) };
+            }
+        }
+    } else if shim_names.contains(&key.as_str()) {
         let p = shim_dir.join(dll_name);
         if let Ok(cs) = CString::new(p.to_string_lossy().as_bytes()) {
             handle = unsafe { LoadLibraryA(cs.as_ptr()) };
@@ -1658,6 +2181,7 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
                                     "FindFirstFileExW" => percy_find_first_file_ex_w as *const () as usize,
                                     "FindFirstFileW" => percy_find_first_file_w as *const () as usize,
                                     "MoveFileExW" => percy_move_file_ex_w as *const () as usize,
+                                    "VirtualFree" => percy_virtual_free as *const () as usize,
                                     "free" | "realloc" if quarantine_on() && !heapchk_on() => {
                                         let real = GetProcAddress(hmod, fn_name_ptr);
                                         quarantine_hook(&name_str, real)
@@ -1832,7 +2356,7 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
         let entry_va = (base as u64).wrapping_add(entry_rva as u64);
         GUEST_IMAGE_BASE.store(base as usize, std::sync::atomic::Ordering::Release);
         AddVectoredExceptionHandler(1, crash_veh);
-        if execute_entry && std::env::var("PERCY_TRACE").is_ok() {
+        if execute_entry {
             AddVectoredExceptionHandler(1, trace_veh);
         }
         let rc = if execute_entry && entry_rva != 0 {

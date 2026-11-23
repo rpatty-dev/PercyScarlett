@@ -1,0 +1,8 @@
+[package]
+name = "amd_fidelityfx_loader_xbox"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "amd_fidelityfx_loader_xbox"
+crate-type = ["cdylib"]
