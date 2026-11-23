@@ -29,6 +29,16 @@ Clean-room Rust translation layer that runs unencrypted Xbox Series X|S (Scarlet
 - Main menu renders at several hundred FPS. In-world is ~45-50 FPS on an RTX 2060 SUPER before the v0.9 VRAM mirror (verification of the mirror is in progress).
 - Known issue: about half of launches still hit an intermittent heap corruption during asset loading. Relaunch if it closes during the loading screen.
 
+### Status
+
+| Area | State | Where |
+| :--- | :--- | :--- |
+| Retail Xbox Series X\|S game | Minecraft (Scarlett build, unmodified exe): boots, main menu, creates/saves/reloads a world, in-game | screenshots above |
+| Loader | Maps the title in-process: relocations, `.pdata`, guest static TLS, import routing, user-path virtualization | `src/pe_loader.rs` |
+| Graphics | D3D12.X command lists replayed onto PC D3D12, console present into a DXGI swap chain | `crates/d3d12_xs/src/{replay,console_list,present}.rs` |
+| Shaders | Minecraft ships DXIL, so its shaders run as-is. The RDNA2 → DXIL lifter is experimental: only its strict mode (used by tests) rejects unknown instructions; the runtime path does not yet | `crates/d3d12_xs/src/rdna2_hlsl.rs` |
+| GTA VI | Package staged and registered; main executable not available yet, so nothing has run | `docs/TheBig6.md` |
+
 ---
 
 ## Ready for TheBig6 😉
