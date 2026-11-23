@@ -22,18 +22,19 @@ struct Hdr {
     inner: *mut c_void,
 }
 
-static SEEN: [std::sync::atomic::AtomicBool; 128] = [const { std::sync::atomic::AtomicBool::new(false) }; 128];
+static SEEN: [std::sync::atomic::AtomicBool; 192] = [const { std::sync::atomic::AtomicBool::new(false) }; 192];
 fn note(slot: usize, a: [usize; 6]) {
     unsafe { super::replay::flush(a[0] as *mut c_void) };
     unsafe { hist_push(a[0], slot) };
     if !SEEN[slot].swap(true, Ordering::Relaxed) {
-        let rsp: usize;
-        unsafe { std::arch::asm!("mov {}, rsp", out(reg) rsp) };
-        let ra = (0..96)
-            .map(|i| unsafe { *((rsp as *const usize).add(i)) })
-            .find(|&v| (0x1_4000_1000..0x1_43d0_0000).contains(&v))
-            .unwrap_or(0);
-        let vp = |p: usize| if p > 0x10000 && p & 7 == 0 { unsafe { *(p as *const usize) } } else { 0 };
+        let ra = super::guest_ra();
+        extern "system" { fn VirtualQuery(p: *const c_void, mbi: *mut [usize; 6], n: usize) -> usize; }
+        let readable = |p: usize| unsafe {
+            let mut m = [0usize; 6];
+            // MEMORY_BASIC_INFORMATION: State @0x20 (u32), Protect @0x24 (u32)
+            VirtualQuery(p as *const c_void, &mut m, 48) != 0 && (m[4] as u32) == 0x1000 && ((m[4] >> 32) as u32) & 0x66 != 0
+        };
+        let vp = |p: usize| if p > 0x10000 && p & 7 == 0 && readable(p) { unsafe { *(p as *const usize) } } else { 0 };
         log_d3d12(&format!(
             "[clx] slot {slot} from G+{:x} args=({:#x}[vt {:#x}],{:#x},{:#x},{:#x},{:#x})",
             ra.wrapping_sub(0x1_4000_0000), a[1], vp(a[1]), a[2], a[3], a[4], a[5]
@@ -169,6 +170,70 @@ unsafe extern "system" fn s124(a: usize, b: usize, c: usize, d: usize, e: usize,
 unsafe extern "system" fn s125(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(125, [a, b, c, d, e, f]); 0 }
 unsafe extern "system" fn s126(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(126, [a, b, c, d, e, f]); 0 }
 unsafe extern "system" fn s127(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(127, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s128(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(128, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s129(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(129, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s130(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(130, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s131(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(131, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s132(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(132, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s133(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(133, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s134(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(134, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s135(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(135, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s136(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(136, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s137(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(137, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s138(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(138, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s139(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(139, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s140(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(140, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s141(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(141, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s142(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(142, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s143(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(143, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s144(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(144, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s145(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(145, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s146(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(146, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s147(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(147, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s148(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(148, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s149(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(149, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s150(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(150, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s151(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(151, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s152(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(152, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s153(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(153, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s154(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(154, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s155(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(155, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s156(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(156, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s157(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(157, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s158(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(158, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s159(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(159, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s160(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(160, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s161(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(161, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s162(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(162, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s163(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(163, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s164(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(164, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s165(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(165, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s166(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(166, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s167(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(167, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s168(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(168, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s169(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(169, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s170(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(170, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s171(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(171, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s172(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(172, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s173(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(173, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s174(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(174, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s175(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(175, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s176(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(176, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s177(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(177, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s178(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(178, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s179(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(179, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s180(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(180, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s181(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(181, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s182(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(182, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s183(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(183, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s184(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(184, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s185(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(185, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s186(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(186, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s187(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(187, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s188(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(188, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s189(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(189, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s190(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(190, [a, b, c, d, e, f]); 0 }
+unsafe extern "system" fn s191(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(191, [a, b, c, d, e, f]); 0 }
 
 unsafe extern "system" fn s11(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(11, [a, b, c, d, e, f]); 0 }
 unsafe extern "system" fn s12(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(12, [a, b, c, d, e, f]); 0 }
@@ -221,7 +286,7 @@ unsafe extern "system" fn s58(a: usize, b: usize, c: usize, d: usize, e: usize, 
 unsafe extern "system" fn s59(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize { note(59, [a, b, c, d, e, f]); 0 }
 const LOGONLY: [unsafe extern "system" fn(usize, usize, usize, usize, usize, usize) -> usize; 49] = [s11, s12, s13, s14, s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s25, s26, s27, s28, s29, s30, s31, s32, s33, s34, s35, s36, s37, s38, s39, s40, s41, s42, s43, s44, s45, s46, s47, s48, s49, s50, s51, s52, s53, s54, s55, s56, s57, s58, s59];
 const FWD: [unsafe extern "system" fn(); 60] = [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18, f19, f20, f21, f22, f23, f24, f25, f26, f27, f28, f29, f30, f31, f32, f33, f34, f35, f36, f37, f38, f39, f40, f41, f42, f43, f44, f45, f46, f47, f48, f49, f50, f51, f52, f53, f54, f55, f56, f57, f58, f59];
-const STUBS: [unsafe extern "system" fn(usize, usize, usize, usize, usize, usize) -> usize; 68] = [s60, s61, s62, s63, s64, s65, s66, s67, s68, s69, s70, s71, s72, s73, s74, s75, s76, s77, s78, s79, s80, s81, s82, s83, s84, s85, s86, s87, s88, s89, s90, s91, s92, s93, s94, s95, s96, s97, s98, s99, s100, s101, s102, s103, s104, s105, s106, s107, s108, s109, s110, s111, s112, s113, s114, s115, s116, s117, s118, s119, s120, s121, s122, s123, s124, s125, s126, s127];
+const STUBS: [unsafe extern "system" fn(usize, usize, usize, usize, usize, usize) -> usize; 132] = [s60, s61, s62, s63, s64, s65, s66, s67, s68, s69, s70, s71, s72, s73, s74, s75, s76, s77, s78, s79, s80, s81, s82, s83, s84, s85, s86, s87, s88, s89, s90, s91, s92, s93, s94, s95, s96, s97, s98, s99, s100, s101, s102, s103, s104, s105, s106, s107, s108, s109, s110, s111, s112, s113, s114, s115, s116, s117, s118, s119, s120, s121, s122, s123, s124, s125, s126, s127, s128, s129, s130, s131, s132, s133, s134, s135, s136, s137, s138, s139, s140, s141, s142, s143, s144, s145, s146, s147, s148, s149, s150, s151, s152, s153, s154, s155, s156, s157, s158, s159, s160, s161, s162, s163, s164, s165, s166, s167, s168, s169, s170, s171, s172, s173, s174, s175, s176, s177, s178, s179, s180, s181, s182, s183, s184, s185, s186, s187, s188, s189, s190, s191];
 
 pub(crate) static mut COUNTS: [u64; 64] = [0; 64];
 pub(crate) unsafe fn census() -> String {
@@ -326,11 +391,11 @@ static VTBL: OnceLock<usize> = OnceLock::new();
 
 fn vtbl() -> usize {
     *VTBL.get_or_init(|| {
-        let mut v = [0usize; 128];
+        let mut v = [0usize; 192];
         for i in 0..60 {
             v[i] = FWD[i] as usize;
         }
-        for i in 60..128 {
+        for i in 60..192 {
             v[i] = STUBS[i - 60] as usize;
         }
         if std::env::current_exe().map(|p| p.with_file_name("percy_clx_map").exists()).unwrap_or(false) {
@@ -348,11 +413,6 @@ fn vtbl() -> usize {
         for i in 27..31 {
             v[i] = LOGONLY[i - 11] as usize;
         }
-        if let Ok(s) = std::fs::read_to_string(std::env::current_exe().unwrap_or_default().with_file_name("percy_clx_drop.txt")) {
-            for i in s.split(',').filter_map(|x| x.trim().parse::<usize>().ok()).filter(|&i| (11..60).contains(&i)) {
-                v[i] = LOGONLY[i - 11] as usize;
-            }
-        }
         v[26] = cl_resource_barrier as usize;
         v[19] = cl_resolve_subresource as usize;
         v[32] = cl_set_descriptor_heaps as usize;
@@ -364,6 +424,20 @@ fn vtbl() -> usize {
         v[34] = cl_set_gfx_rs as usize;
         v[9] = cl_close as usize;
         v[10] = cl_reset as usize;
+        v[139] = cl_reset_x as usize;
+        // newer layout, base #69-#72 shifted by two (xcl): bottom-of-pipe writes and memory waits
+        v[71] = super::cpu_writes::write32_bottom as usize;
+        v[72] = super::cpu_writes::write64_bottom as usize;
+        v[73] = super::cpu_writes::wait32 as usize;
+        v[74] = super::cpu_writes::wait64 as usize;
+        if let Ok(s) = std::fs::read_to_string(std::env::current_exe().unwrap_or_default().with_file_name("percy_clx_drop.txt")) {
+            for i in s.split(',').filter_map(|x| x.trim().parse::<usize>().ok()).filter(|&i| (11..60).contains(&i)) {
+                v[i] = LOGONLY[i - 11] as usize;
+            }
+        }
+        v[50] = cl_om_set_rts as usize;
+        v[51] = cl_clear_dsv as usize;
+        v[52] = cl_clear_rtv as usize;
         Box::leak(Box::new(v)).as_ptr() as usize
     })
 }
@@ -491,11 +565,14 @@ unsafe extern "system" fn cl_close(obj: *mut c_void) -> i32 {
     hr
 }
 
+/// Console slot 139 (+0x458) ResetX(allocator, initialPso, flags): the title resets lists only here.
+unsafe extern "system" fn cl_reset_x(obj: *mut c_void, alloc: *mut c_void, pso: *mut c_void, _flags: u32) -> i32 { cl_reset(obj, alloc, pso) }
 unsafe extern "system" fn cl_reset(obj: *mut c_void, alloc: *mut c_void, pso: *mut c_void) -> i32 {
     let inner = inner_of(obj).unwrap_or(obj);
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void) -> i32 =
         std::mem::transmute(*(*(inner as *const *const usize)).add(10));
     set_open(obj, true);
+    super::cpu_writes::reset(obj);
     if RESETS.fetch_add(1, Ordering::Relaxed) < 6 {
         log_d3d12(&format!("[clx] Reset obj={obj:p}"));
     }
@@ -530,7 +607,7 @@ fn qnote(slot: usize, a: [usize; 6]) {
         unsafe { std::arch::asm!("mov {}, rsp", out(reg) rsp) };
         let ra = (0..96)
             .map(|i| unsafe { *((rsp as *const usize).add(i)) })
-            .find(|&v| (0x1_4000_1000..0x1_43d0_0000).contains(&v))
+            .find(|&v| (0x1_4000_1000..0x1_4c00_0000).contains(&v))
             .unwrap_or(0);
         log_d3d12(&format!(
             "[qx] slot {slot} (unimpl) from G+{:x} args=({:#x},{:#x},{:#x},{:#x},{:#x})",
@@ -722,15 +799,35 @@ unsafe extern "system" fn cl_set_descriptor_heaps(obj: *mut c_void, n: u32, heap
     f(inner, n, heaps)
 }
 
-/// Console slot 52 = ClearRenderTargetView(rtv, color[4], nRects, rects) (PC slot 48).
-unsafe extern "system" fn cl_begin_query(obj: *mut c_void, rtv: usize, color: *const f32, n: u32, rects: *const c_void) {
+/// Console slot 52 = ClearRenderTargetView(rtv, color[4], nRects, rects) (PC slot 48). Title RTV
+/// handles point into title-placed heaps: translate to the host heap.
+unsafe extern "system" fn cl_clear_rtv(obj: *mut c_void, rtv: usize, color: *const f32, n: u32, rects: *const c_void) {
+    super::replay::flush(obj);
+    let h = super::xlate_cpu(rtv);
     static N: AtomicU32 = AtomicU32::new(0);
     if N.fetch_add(1, Ordering::Relaxed) < 4 && !color.is_null() {
-        log_d3d12(&format!("[clx] ClearRTV {rtv:#x} rgba=({},{},{},{}) n={n}", *color, *color.add(1), *color.add(2), *color.add(3)));
+        log_d3d12(&format!("[clx] ClearRTV {rtv:#x}->{h:#x} rgba=({},{},{},{}) n={n}", *color, *color.add(1), *color.add(2), *color.add(3)));
     }
     let (inner, f) = inner_fn(obj, 48);
     let f: unsafe extern "system" fn(*mut c_void, usize, *const f32, u32, *const c_void) = std::mem::transmute(f);
-    f(inner, rtv, color, n, rects)
+    f(inner, h, color, n, rects)
+}
+/// Console slot 51 = ClearDepthStencilView(dsv, flags, depth, stencil, nRects, rects) (PC 47).
+unsafe extern "system" fn cl_clear_dsv(obj: *mut c_void, dsv: usize, flags: u32, depth: f32, stencil: u8, n: u32, rects: *const c_void) {
+    super::replay::flush(obj);
+    let (inner, f) = inner_fn(obj, 47);
+    let f: unsafe extern "system" fn(*mut c_void, usize, u32, f32, u8, u32, *const c_void) = std::mem::transmute(f);
+    f(inner, super::xlate_cpu(dsv), flags, depth, stencil, n, rects)
+}
+/// Console slot 50 = OMSetRenderTargets(n, rtvs, singleRange, dsv) (PC 46).
+unsafe extern "system" fn cl_om_set_rts(obj: *mut c_void, n: u32, rtvs: *const usize, single: i32, dsv: *const usize) {
+    super::replay::flush(obj);
+    let k = if single != 0 { n.min(1) } else { n } as usize;
+    let r: Vec<usize> = if rtvs.is_null() { vec![] } else { (0..k).map(|i| super::xlate_cpu(*rtvs.add(i))).collect() };
+    let d = if dsv.is_null() { 0 } else { super::xlate_cpu(*dsv) };
+    let (inner, f) = inner_fn(obj, 46);
+    let f: unsafe extern "system" fn(*mut c_void, u32, *const usize, i32, *const usize) = std::mem::transmute(f);
+    f(inner, n, if rtvs.is_null() { rtvs } else { r.as_ptr() }, single, if dsv.is_null() { dsv } else { &d })
 }
 
 /// Console slot 25 = SetPipelineState (PC 25): method-call fallback of the inline record.
@@ -749,12 +846,21 @@ unsafe extern "system" fn cl_set_cs_rs(obj: *mut c_void, rs: *mut c_void) {
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void) = std::mem::transmute(f);
     f(inner, rs)
 }
+thread_local! {
+    /// Debug: which PC call cl_set_gfx_rs is in (1 flush, 2 set_rs, 3 PC SetGraphicsRootSignature), with obj/rs.
+    pub(crate) static GFX_RS_STEP: std::cell::Cell<(u32, usize, usize)> = const { std::cell::Cell::new((0, 0, 0)) };
+}
 unsafe extern "system" fn cl_set_gfx_rs(obj: *mut c_void, rs: *mut c_void) {
+    let st = |n| GFX_RS_STEP.with(|c| c.set((n, obj as usize, rs as usize)));
+    st(1);
     super::replay::flush(obj);
+    st(2);
     super::replay::set_root_signature(obj, rs, false);
     let (inner, f) = inner_fn(obj, 30);
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void) = std::mem::transmute(f);
-    f(inner, rs)
+    st(3);
+    f(inner, rs);
+    st(0);
 }
 
 /// Slot 15: CopyBufferRegion(dst, dstOff, src, srcOff, bytes) — mirrored buffers use their twin.

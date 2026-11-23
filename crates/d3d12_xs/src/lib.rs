@@ -572,7 +572,7 @@ pub unsafe extern "system" fn D3D12EnableExperimentalFeatures(
 
 #[repr(C)]
 struct DeviceXProxy {
-    vtbl: *const [*const c_void; 128],
+    vtbl: *const [*const c_void; 192],
     inner: *mut c_void,
     refs: AtomicU32,
 }
@@ -732,21 +732,28 @@ mod dev_fwd {
 
 /// Per-slot Xbox-only ID3D12DeviceX stubs: log the slot index once, return S_OK.
 mod console_list;
+mod cpu_writes;
 mod replay;
 mod mirror;
 mod present;
+mod watch;
+mod dred;
+pub(crate) fn pso_fallback_raw() -> usize { pso_guard::fallback_raw() }
+/// First guest return address on the real (unwound) stack.
+pub(crate) fn guest_ra() -> usize {
+    extern "system" { fn RtlCaptureStackBackTrace(skip: u32, n: u32, frames: *mut usize, hash: *mut u32) -> u16; }
+    let mut f = [0usize; 24];
+    let n = unsafe { RtlCaptureStackBackTrace(1, 24, f.as_mut_ptr(), std::ptr::null_mut()) } as usize;
+    f[..n].iter().copied().find(|&v| (0x1_4000_1000..0x1_4c00_0000).contains(&v)).unwrap_or(0)
+}
+
 mod xbox_slots {
     use super::*;
-    static SEEN: [std::sync::atomic::AtomicBool; 128] = [const { std::sync::atomic::AtomicBool::new(false) }; 128];
+    static SEEN: [std::sync::atomic::AtomicBool; 192] = [const { std::sync::atomic::AtomicBool::new(false) }; 192];
     pub(super) fn note(slot: usize, a: [usize; 6]) {
         if !SEEN[slot].swap(true, Ordering::Relaxed) {
             // First guest return address on the stack (guest is mapped at its preferred base).
-            let rsp: usize;
-            unsafe { std::arch::asm!("mov {}, rsp", out(reg) rsp) };
-            let ra = (0..96)
-                .map(|i| unsafe { *((rsp as *const usize).add(i)) })
-                .find(|&v| (0x1_4000_1000..0x1_43d0_0000).contains(&v))
-                .unwrap_or(0);
+            let ra = super::guest_ra();
             log_d3d12(&format!(
                 "[d3d12x] ID3D12DeviceX slot {slot} (unimplemented) from G+{:x} args=({:#x},{:#x},{:#x},{:#x},{:#x}) -> S_OK",
                 ra.wrapping_sub(0x1_4000_0000), a[1], a[2], a[3], a[4], a[5]
@@ -845,7 +852,71 @@ mod xbox_slots {
     xslot!(x125, 125);
     xslot!(x126, 126);
     xslot!(x127, 127);
-    pub const SLOTS: [*const c_void; 84] = [x44 as *const c_void, x45 as *const c_void, x46 as *const c_void, x47 as *const c_void, x48 as *const c_void, x49 as *const c_void, x50 as *const c_void, x51 as *const c_void, x52 as *const c_void, x53 as *const c_void, x54 as *const c_void, x55 as *const c_void, x56 as *const c_void, x57 as *const c_void, x58 as *const c_void, x59 as *const c_void, x60 as *const c_void, x61 as *const c_void, x62 as *const c_void, x63 as *const c_void, x64 as *const c_void, x65 as *const c_void, x66 as *const c_void, x67 as *const c_void, x68 as *const c_void, x69 as *const c_void, x70 as *const c_void, x71 as *const c_void, x72 as *const c_void, x73 as *const c_void, x74 as *const c_void, x75 as *const c_void, x76 as *const c_void, x77 as *const c_void, x78 as *const c_void, x79 as *const c_void, x80 as *const c_void, x81 as *const c_void, x82 as *const c_void, x83 as *const c_void, x84 as *const c_void, x85 as *const c_void, x86 as *const c_void, x87 as *const c_void, x88 as *const c_void, x89 as *const c_void, x90 as *const c_void, x91 as *const c_void, x92 as *const c_void, x93 as *const c_void, x94 as *const c_void, x95 as *const c_void, x96 as *const c_void, x97 as *const c_void, x98 as *const c_void, x99 as *const c_void, x100 as *const c_void, x101 as *const c_void, x102 as *const c_void, x103 as *const c_void, x104 as *const c_void, x105 as *const c_void, x106 as *const c_void, x107 as *const c_void, x108 as *const c_void, x109 as *const c_void, x110 as *const c_void, x111 as *const c_void, x112 as *const c_void, x113 as *const c_void, x114 as *const c_void, x115 as *const c_void, x116 as *const c_void, x117 as *const c_void, x118 as *const c_void, x119 as *const c_void, x120 as *const c_void, x121 as *const c_void, x122 as *const c_void, x123 as *const c_void, x124 as *const c_void, x125 as *const c_void, x126 as *const c_void, x127 as *const c_void];
+    xslot!(x128, 128);
+    xslot!(x129, 129);
+    xslot!(x130, 130);
+    xslot!(x131, 131);
+    xslot!(x132, 132);
+    xslot!(x133, 133);
+    xslot!(x134, 134);
+    xslot!(x135, 135);
+    xslot!(x136, 136);
+    xslot!(x137, 137);
+    xslot!(x138, 138);
+    xslot!(x139, 139);
+    xslot!(x140, 140);
+    xslot!(x141, 141);
+    xslot!(x142, 142);
+    xslot!(x143, 143);
+    xslot!(x144, 144);
+    xslot!(x145, 145);
+    xslot!(x146, 146);
+    xslot!(x147, 147);
+    xslot!(x148, 148);
+    xslot!(x149, 149);
+    xslot!(x150, 150);
+    xslot!(x151, 151);
+    xslot!(x152, 152);
+    xslot!(x153, 153);
+    xslot!(x154, 154);
+    xslot!(x155, 155);
+    xslot!(x156, 156);
+    xslot!(x157, 157);
+    xslot!(x158, 158);
+    xslot!(x159, 159);
+    xslot!(x160, 160);
+    xslot!(x161, 161);
+    xslot!(x162, 162);
+    xslot!(x163, 163);
+    xslot!(x164, 164);
+    xslot!(x165, 165);
+    xslot!(x166, 166);
+    xslot!(x167, 167);
+    xslot!(x168, 168);
+    xslot!(x169, 169);
+    xslot!(x170, 170);
+    xslot!(x171, 171);
+    xslot!(x172, 172);
+    xslot!(x173, 173);
+    xslot!(x174, 174);
+    xslot!(x175, 175);
+    xslot!(x176, 176);
+    xslot!(x177, 177);
+    xslot!(x178, 178);
+    xslot!(x179, 179);
+    xslot!(x180, 180);
+    xslot!(x181, 181);
+    xslot!(x182, 182);
+    xslot!(x183, 183);
+    xslot!(x184, 184);
+    xslot!(x185, 185);
+    xslot!(x186, 186);
+    xslot!(x187, 187);
+    xslot!(x188, 188);
+    xslot!(x189, 189);
+    xslot!(x190, 190);
+    xslot!(x191, 191);
+    pub const SLOTS: [*const c_void; 148] = [x44 as *const c_void, x45 as *const c_void, x46 as *const c_void, x47 as *const c_void, x48 as *const c_void, x49 as *const c_void, x50 as *const c_void, x51 as *const c_void, x52 as *const c_void, x53 as *const c_void, x54 as *const c_void, x55 as *const c_void, x56 as *const c_void, x57 as *const c_void, x58 as *const c_void, x59 as *const c_void, x60 as *const c_void, x61 as *const c_void, x62 as *const c_void, x63 as *const c_void, x64 as *const c_void, x65 as *const c_void, x66 as *const c_void, x67 as *const c_void, x68 as *const c_void, x69 as *const c_void, x70 as *const c_void, x71 as *const c_void, x72 as *const c_void, x73 as *const c_void, x74 as *const c_void, x75 as *const c_void, x76 as *const c_void, x77 as *const c_void, x78 as *const c_void, x79 as *const c_void, x80 as *const c_void, x81 as *const c_void, x82 as *const c_void, x83 as *const c_void, x84 as *const c_void, x85 as *const c_void, x86 as *const c_void, x87 as *const c_void, x88 as *const c_void, x89 as *const c_void, x90 as *const c_void, x91 as *const c_void, x92 as *const c_void, x93 as *const c_void, x94 as *const c_void, x95 as *const c_void, x96 as *const c_void, x97 as *const c_void, x98 as *const c_void, x99 as *const c_void, x100 as *const c_void, x101 as *const c_void, x102 as *const c_void, x103 as *const c_void, x104 as *const c_void, x105 as *const c_void, x106 as *const c_void, x107 as *const c_void, x108 as *const c_void, x109 as *const c_void, x110 as *const c_void, x111 as *const c_void, x112 as *const c_void, x113 as *const c_void, x114 as *const c_void, x115 as *const c_void, x116 as *const c_void, x117 as *const c_void, x118 as *const c_void, x119 as *const c_void, x120 as *const c_void, x121 as *const c_void, x122 as *const c_void, x123 as *const c_void, x124 as *const c_void, x125 as *const c_void, x126 as *const c_void, x127 as *const c_void, x128 as *const c_void, x129 as *const c_void, x130 as *const c_void, x131 as *const c_void, x132 as *const c_void, x133 as *const c_void, x134 as *const c_void, x135 as *const c_void, x136 as *const c_void, x137 as *const c_void, x138 as *const c_void, x139 as *const c_void, x140 as *const c_void, x141 as *const c_void, x142 as *const c_void, x143 as *const c_void, x144 as *const c_void, x145 as *const c_void, x146 as *const c_void, x147 as *const c_void, x148 as *const c_void, x149 as *const c_void, x150 as *const c_void, x151 as *const c_void, x152 as *const c_void, x153 as *const c_void, x154 as *const c_void, x155 as *const c_void, x156 as *const c_void, x157 as *const c_void, x158 as *const c_void, x159 as *const c_void, x160 as *const c_void, x161 as *const c_void, x162 as *const c_void, x163 as *const c_void, x164 as *const c_void, x165 as *const c_void, x166 as *const c_void, x167 as *const c_void, x168 as *const c_void, x169 as *const c_void, x170 as *const c_void, x171 as *const c_void, x172 as *const c_void, x173 as *const c_void, x174 as *const c_void, x175 as *const c_void, x176 as *const c_void, x177 as *const c_void, x178 as *const c_void, x179 as *const c_void, x180 as *const c_void, x181 as *const c_void, x182 as *const c_void, x183 as *const c_void, x184 as *const c_void, x185 as *const c_void, x186 as *const c_void, x187 as *const c_void, x188 as *const c_void, x189 as *const c_void, x190 as *const c_void, x191 as *const c_void];
 }
 
 // Struct-returning methods: the console D3D12.X ABI passes the hidden return buffer FIRST
@@ -862,10 +933,24 @@ unsafe extern "system" fn devx_get_resource_allocation_info(ret: *mut c_void, th
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, u32, u32, *const c_void) -> *mut c_void = std::mem::transmute(f);
     // Console-only flag bits make the PC runtime report SizeInBytes = UINT64_MAX.
     let clean: Vec<[u64; 7]> = (0..n as usize).map(|i| sanitize_resource_desc((descs as *const u8).add(i * 56))).collect();
+    let mut clean = clean;
     f(inner, ret, mask, n, if descs.is_null() { descs } else { clean.as_ptr() as *const c_void });
     let r = ret as *const u64;
+    if n > 0 && *r == u64::MAX {
+        // Small-alignment requests the PC runtime rejects: let it choose (Alignment = 0).
+        let raw = &clean[0];
+        let (a0, l0) = (raw[1], (raw[5] >> 32) as u32);
+        for c in clean.iter_mut() {
+            c[1] = 0;
+        }
+        f(inner, ret, mask, n, clean.as_ptr() as *const c_void);
+        static RL: AtomicU32 = AtomicU32::new(0);
+        if RL.fetch_add(1, Ordering::Relaxed) < 4 {
+            log_d3d12(&format!("[d3d12x] AllocInfo retry align {a0:#x}->0 layout={l0:#x} samples={:#x} -> size={:#x}", clean[0][5] as u32, *r));
+        }
+    }
     static AI_N: AtomicU32 = AtomicU32::new(0);
-    if n > 0 && (*r == u64::MAX || *r > (1 << 32) || (clean[0][0] as u32 == 3 && AI_N.fetch_add(1, Ordering::Relaxed) < 40)) {
+    if n > 0 && (*r == u64::MAX || *r > (1 << 32) || clean[0][0] as u32 == 3) && { let k = AI_N.fetch_add(1, Ordering::Relaxed); k < 40 || k.is_power_of_two() } {
         let d = &clean[0];
         log_d3d12(&format!(
             "[d3d12x] AllocInfo n={n} ra={:#x} size={:#x} align={:#x} dim={} w={} h={} da={} fmt={} fl={:#x}",
@@ -1058,7 +1143,14 @@ unsafe fn small_struct_get(slot: usize, this: *mut c_void, b: *mut u64, ra: usiz
 }
 unsafe extern "system" fn res_get_desc_d(a: *mut c_void, b: *mut c_void, ra: usize) -> *mut c_void { big_struct_get(10, a, b, ra) }
 unsafe extern "system" fn heap_get_desc_d(a: *mut c_void, b: *mut c_void, ra: usize) -> *mut c_void { big_struct_get(8, a, b, ra) }
-unsafe extern "system" fn heap_cpu_start_d(t: *mut c_void, b: *mut u64, ra: usize) -> u64 { small_struct_get(9, t, b, ra) }
+unsafe extern "system" fn heap_cpu_start_d(t: *mut c_void, b: *mut u64, ra: usize) -> u64 {
+    if caller_is_guest(ra) {
+        if let Some(a) = placed_title_start(t) {
+            return a as u64;
+        }
+    }
+    small_struct_get(9, t, b, ra)
+}
 unsafe extern "system" fn heap_gpu_start_d(t: *mut c_void, b: *mut u64, ra: usize) -> u64 { small_struct_get(10, t, b, ra) }
 ra_tramp!(res_get_desc, res_get_desc_d);
 ra_tramp!(heap_get_desc, heap_get_desc_d);
@@ -1071,19 +1163,75 @@ unsafe extern "system" fn res_gpu_va(this: *mut c_void) -> u64 {
         return va;
     }
     let f: unsafe extern "system" fn(*mut c_void) -> u64 = std::mem::transmute(orig_slot(this, 11));
-    f(this)
+    f(this) + va_delta(this)
+}
+
+/// Buffers placed at a non-64 KiB-aligned title VA are created at the aligned-down offset; the
+/// title-visible GPU VA is base + delta.
+static VA_DELTA: Mutex<Vec<(usize, u64)>> = Mutex::new(Vec::new());
+fn va_delta(r: *mut c_void) -> u64 {
+    VA_DELTA.lock().unwrap().iter().find(|e| e.0 == r as usize).map(|e| e.1).unwrap_or(0)
 }
 /// Device slots 18/19: Create{Shader Resource,Unordered Access}View — views of mirrored buffers
 /// read the twin.
+// ---- Title-placed descriptor heaps ----
+// Console heap desc is 32 bytes {Type, Num, Flags, NodeMask, CpuAddress, Size}: the heap lives in
+// title memory. Host heaps can't, so GetCPUDescriptorHandleForHeapStart reports the title address
+// and CPU handles in that range are translated (offset-preserving: the title sizes it with our
+// increment) to the real heap.
+static PLACED_HEAPS: Mutex<Vec<(usize, usize, usize, usize)>> = Mutex::new(Vec::new()); // (heap, addr, size, real)
+
+fn placed_title_start(heap: *mut c_void) -> Option<usize> {
+    PLACED_HEAPS.lock().unwrap().iter().find(|p| p.0 == heap as usize).map(|p| p.1)
+}
+
+pub(crate) fn xlate_cpu(h: usize) -> usize {
+    PLACED_HEAPS.lock().unwrap().iter().find(|p| h >= p.1 && h < p.1 + p.2).map(|p| p.3 + (h - p.1)).unwrap_or(h)
+}
+
+unsafe extern "system" fn devx_create_cbv(this: *mut c_void, desc: *const c_void, h: usize) {
+    let (inner, f) = devx_inner_fn(this, 17);
+    let f: unsafe extern "system" fn(*mut c_void, *const c_void, usize) = std::mem::transmute(f);
+    f(inner, desc, xlate_cpu(h))
+}
 unsafe extern "system" fn devx_create_srv(this: *mut c_void, res: *mut c_void, desc: *const c_void, h: usize) {
     let (inner, f) = devx_inner_fn(this, 18);
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *const c_void, usize) = std::mem::transmute(f);
-    f(inner, mirror::sub(res), desc, h)
+    f(inner, mirror::sub(res), desc, xlate_cpu(h))
 }
 unsafe extern "system" fn devx_create_uav(this: *mut c_void, res: *mut c_void, ctr: *mut c_void, desc: *const c_void, h: usize) {
     let (inner, f) = devx_inner_fn(this, 19);
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, *const c_void, usize) = std::mem::transmute(f);
-    f(inner, mirror::sub(res), mirror::sub(ctr), desc, h)
+    f(inner, mirror::sub(res), mirror::sub(ctr), desc, xlate_cpu(h))
+}
+unsafe extern "system" fn devx_create_rtv(this: *mut c_void, res: *mut c_void, desc: *const c_void, h: usize) {
+    let (inner, f) = devx_inner_fn(this, 20);
+    let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *const c_void, usize) = std::mem::transmute(f);
+    f(inner, res, desc, xlate_cpu(h))
+}
+unsafe extern "system" fn devx_create_dsv(this: *mut c_void, res: *mut c_void, desc: *const c_void, h: usize) {
+    let (inner, f) = devx_inner_fn(this, 21);
+    let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *const c_void, usize) = std::mem::transmute(f);
+    f(inner, res, desc, xlate_cpu(h))
+}
+unsafe extern "system" fn devx_create_sampler(this: *mut c_void, desc: *const c_void, h: usize) {
+    let (inner, f) = devx_inner_fn(this, 22);
+    let f: unsafe extern "system" fn(*mut c_void, *const c_void, usize) = std::mem::transmute(f);
+    f(inner, desc, xlate_cpu(h))
+}
+unsafe extern "system" fn devx_copy_descriptors(
+    this: *mut c_void, nd: u32, ds: *const usize, dsz: *const u32, ns: u32, ss: *const usize, ssz: *const u32, ty: u32,
+) {
+    let (inner, f) = devx_inner_fn(this, 23);
+    let f: unsafe extern "system" fn(*mut c_void, u32, *const usize, *const u32, u32, *const usize, *const u32, u32) = std::mem::transmute(f);
+    let d: Vec<usize> = (0..nd as usize).map(|i| xlate_cpu(*ds.add(i))).collect();
+    let s: Vec<usize> = (0..ns as usize).map(|i| xlate_cpu(*ss.add(i))).collect();
+    f(inner, nd, d.as_ptr(), dsz, ns, s.as_ptr(), ssz, ty)
+}
+unsafe extern "system" fn devx_copy_descriptors_simple(this: *mut c_void, n: u32, d: usize, s: usize, ty: u32) {
+    let (inner, f) = devx_inner_fn(this, 24);
+    let f: unsafe extern "system" fn(*mut c_void, u32, usize, usize, u32) = std::mem::transmute(f);
+    f(inner, n, xlate_cpu(d), xlate_cpu(s), ty)
 }
 
 unsafe fn patch_resource(r: *mut c_void) {
@@ -1094,13 +1242,36 @@ unsafe fn patch_resource(r: *mut c_void) {
 unsafe extern "system" fn devx_create_descriptor_heap(this: *mut c_void, desc: *const c_void, riid: *const c_void, out: *mut *mut c_void) -> i32 {
     let (inner, f) = devx_inner_fn(this, 14);
     let f: unsafe extern "system" fn(*mut c_void, *const c_void, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(f);
-    let hr = f(inner, desc, riid, out);
+    let mut hr = f(inner, desc, riid, out);
+    if hr < 0 && !desc.is_null() && *(desc as *const u32) == 0 && *(desc as *const u32).add(2) & 1 != 0 {
+        // Shader-visible CBV/SRV/UAV heaps cap at 1,000,000 on PC (console allows more).
+        let mut d = *(desc as *const [u32; 4]);
+        d[1] = d[1].min(1_000_000);
+        d[3] = 0;
+        hr = f(inner, d.as_ptr() as *const c_void, riid, out);
+        log_d3d12(&format!("[d3d12x] CreateDescriptorHeap clamp n={} -> {:08x}", d[1], hr as u32));
+    }
     if !desc.is_null() {
         let d = desc as *const u32;
         log_d3d12(&format!("[d3d12x] CreateDescriptorHeap type={} n={} flags={:#x} node={} -> {:08x}", *d, *d.add(1), *d.add(2), *d.add(3), hr as u32));
     }
     if hr >= 0 && !out.is_null() {
         patch_object(*out, 12, &[(8, heap_get_desc as usize), (9, heap_cpu_start as usize), (10, heap_gpu_start as usize)]);
+        let addr = *((desc as *const u8).add(16) as *const usize);
+        let size = *((desc as *const u8).add(24) as *const usize);
+        // Only a console 32-byte desc carries {addr, size}; validate size == count * increment.
+        let (ty, n) = (*(desc as *const u32), *(desc as *const u32).add(1));
+        let (dinner, dinc) = devx_inner_fn(this, 15);
+        let inc_f: unsafe extern "system" fn(*mut c_void, u32) -> u32 = std::mem::transmute(dinc);
+        let expect = n as usize * inc_f(dinner, ty) as usize;
+        if addr > 0x10000 && size != 0 && size == expect {
+            // Real CPU start via the original slot 9 (PC ABI: this, out*).
+            let f: unsafe extern "system" fn(*mut c_void, *mut u64) -> *mut u64 = std::mem::transmute(orig_slot(*out, 9));
+            let mut real = 0u64;
+            f(*out, &mut real);
+            PLACED_HEAPS.lock().unwrap().push((*out as usize, addr, size, real as usize));
+            log_d3d12(&format!("[d3d12x] DescriptorHeap placed at title {addr:#x}+{size:#x} -> host {real:#x}"));
+        }
     }
     hr
 }
@@ -1211,6 +1382,534 @@ unsafe extern "system" fn devx_create_placed_resource(
     hr
 }
 
+/// Console slot 133: create a resource over title-owned memory at `va`
+/// (va, desc, state, clear, riid, out). Host: heap over the existing allocation via
+/// ID3D12Device3::OpenExistingHeapFromAddress, then a placed resource at va's offset.
+unsafe extern "system" fn devx_create_placed_resource_x(
+    this: *mut c_void,
+    va: usize,
+    desc: *const u8,
+    state: u32,
+    clear: *const c_void,
+    riid: *const c_void,
+    out: *mut *mut c_void,
+) -> i32 {
+    #[repr(C)]
+    struct Mbi { base: usize, alloc_base: usize, alloc_prot: u32, part: u16, size: usize, state: u32, prot: u32, ty: u32 }
+    extern "system" { fn VirtualQuery(p: usize, m: *mut Mbi, n: usize) -> usize; }
+    static HEAPS: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
+    const IID_DEVICE3: [u8; 16] = [0x15, 0xdc, 0xda, 0x81, 0xad, 0x2b, 0x92, 0x43, 0x93, 0xc5, 0x10, 0x13, 0x45, 0xc4, 0xaa, 0x98];
+    const IID_HEAP: [u8; 16] = [0x02, 0x25, 0x3b, 0x6b, 0x51, 0x6e, 0xb3, 0x45, 0x90, 0xee, 0x98, 0x84, 0x26, 0x5e, 0x8d, 0xf3];
+    let inner = (*(this as *const DeviceXProxy)).inner;
+    let mut m: Mbi = std::mem::zeroed();
+    if va == 0 || VirtualQuery(va, &mut m, std::mem::size_of::<Mbi>()) == 0 || m.state != 0x1000 {
+        log_d3d12(&format!("[d3d12x] PlacedResourceX va={va:#x} not committed"));
+        return 0x8007_0057u32 as i32;
+    }
+    let base = m.alloc_base;
+    let mut heap = HEAPS.lock().unwrap().iter().find(|h| h.0 == base).map(|h| h.1).unwrap_or(0);
+    let mut hr = 0;
+    if heap == 0 {
+        let vt = *(inner as *const *const *const c_void);
+        let qi: unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(*vt.add(0));
+        let mut d3: *mut c_void = std::ptr::null_mut();
+        hr = qi(inner, IID_DEVICE3.as_ptr() as *const c_void, &mut d3);
+        if hr >= 0 {
+            let v3 = *(d3 as *const *const *const c_void);
+            let open: unsafe extern "system" fn(*mut c_void, usize, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(*v3.add(48));
+            let mut h: *mut c_void = std::ptr::null_mut();
+            hr = open(d3, base, IID_HEAP.as_ptr() as *const c_void, &mut h);
+            let rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(*v3.add(2));
+            rel(d3);
+            if hr >= 0 {
+                heap = h as usize;
+                HEAPS.lock().unwrap().push((base, heap));
+            }
+            // allocation size: walk the regions sharing this allocation base
+            let mut sz = 0usize;
+            let mut q: Mbi = std::mem::zeroed();
+            while VirtualQuery(base + sz, &mut q, std::mem::size_of::<Mbi>()) != 0 && q.alloc_base == base && q.size != 0 { sz += q.size; }
+            log_d3d12(&format!("[d3d12x] heap open base={base:#x} size={:#x} ({} MiB) for va={va:#x} -> {:08x}", sz, sz >> 20, hr as u32));
+        }
+    }
+    let is_buffer = !desc.is_null() && *(desc as *const u32) == 1;
+    if heap == 0 && is_buffer {
+        log_d3d12(&format!("[d3d12x] PlacedResourceX va={va:#x} base={base:#x} heap open failed {:08x}", hr as u32));
+        return hr;
+    }
+    let (inner, f) = devx_inner_fn(this, 29);
+    let f: unsafe extern "system" fn(*mut c_void, *mut c_void, u64, *const u8, u32, *const c_void, *const c_void, *mut *mut c_void) -> i32 =
+        std::mem::transmute(f);
+    let mut pc_desc = sanitize_resource_desc(desc);
+    if pc_desc[0] as u32 != 1 {
+        // Textures can't live on cross-adapter (address-backed) heaps: give them their own
+        // committed DEFAULT memory. Uploads reach them through copies, not the title VA.
+        let (cinner, cf) = devx_inner_fn(this, 27);
+        let cf: unsafe extern "system" fn(*mut c_void, *const u32, u32, *const u8, u32, *const c_void, *const c_void, *mut *mut c_void) -> i32 =
+            std::mem::transmute(cf);
+        let props = [1u32, 0, 0, 1, 1];
+        pc_desc[1] = 0;
+        let mut hr = cf(cinner, props.as_ptr(), 0, pc_desc.as_ptr() as *const u8, 0, clear, riid, out);
+        if hr < 0 {
+            hr = cf(cinner, props.as_ptr(), 0, pc_desc.as_ptr() as *const u8, 0, std::ptr::null(), riid, out);
+        }
+        static TN: AtomicU32 = AtomicU32::new(0);
+        if TN.fetch_add(1, Ordering::Relaxed) < 6 || hr < 0 {
+            log_d3d12(&format!("[d3d12x] PlacedResourceX texture va={va:#x} dim={} -> committed {:08x}", pc_desc[0] as u32, hr as u32));
+        }
+        if hr >= 0 && !out.is_null() {
+            patch_resource(*out);
+        }
+        return hr;
+    }
+    // Heaps from OpenExistingHeapFromAddress are cross-adapter: resources need ALLOW_CROSS_ADAPTER.
+    pc_desc[6] |= 0x10;
+    // Cross-adapter/system heaps accept buffers in COMMON; console passes its own state encoding.
+    let st = if pc_desc[0] as u32 == 1 { 0 } else { state };
+    let off = (va - base) as u64;
+    let delta = off & 0xFFFF;
+    if delta != 0 {
+        pc_desc[2] += delta; // widen so [va, va+w) stays covered
+    }
+    hr = f(inner, heap as *mut c_void, off - delta, pc_desc.as_ptr() as *const u8, st, clear, riid, out);
+    if hr >= 0 && delta != 0 && !out.is_null() {
+        VA_DELTA.lock().unwrap().push((*out as usize, delta));
+    }
+    log_d3d12(&format!("[d3d12x] PlacedResourceX va={va:#x} off={:#x} dim={} w={:#x} state={state:#x} -> {:08x}", va - base, pc_desc[0] as u32, pc_desc[2], hr as u32));
+    if hr >= 0 && !out.is_null() {
+        patch_resource(*out);
+        if pc_desc[0] as u32 == 1 {
+            replay::note_buffer(*out, pc_desc[2], 3);
+        }
+    }
+    hr
+}
+
+/// Console slot 62: CreateComputePipelineState(desc, ?, ?, riid, out) (XboxBvhBuilder call site;
+/// desc is D3D12_COMPUTE_PIPELINE_STATE_DESC). Middle args are null there; forwarded to PC slot 11.
+unsafe extern "system" fn devx_create_compute_pso_x(this: *mut c_void, desc: *const u8, a: usize, b: usize, riid: *const c_void, out: *mut *mut c_void) -> i32 {
+    let cs_len = if desc.is_null() { 0 } else { *(desc.add(16) as *const usize) };
+    log_d3d12(&format!("[d3d12x] ComputePSO-X begin cs_len={cs_len:#x}"));
+    let t = std::time::Instant::now();
+    let mut hr = devx_create_compute_pso(this, desc, riid, out);
+    if hr < 0 && !out.is_null() {
+        if let Some(fb) = pso_guard::fallback() {
+            *out = fb;
+            hr = 0;
+        }
+    }
+    log_d3d12(&format!("[d3d12x] ComputePSO-X (a={a:#x}, b={b:#x}) -> {:08x} in {} ms", hr as u32, t.elapsed().as_millis()));
+    hr
+}
+
+/// Slot 41: CreateCommandSignature(desc{stride, n, args*, node}, rootSig, riid, out).
+unsafe extern "system" fn devx_create_command_signature(this: *mut c_void, desc: *const u8, rs: *mut c_void, riid: *const c_void, out: *mut *mut c_void) -> i32 {
+    let (inner, f) = devx_inner_fn(this, 41);
+    let f: unsafe extern "system" fn(*mut c_void, *const u8, *mut c_void, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(f);
+    let mut d = [0u8; 24];
+    std::ptr::copy_nonoverlapping(desc, d.as_mut_ptr(), 24);
+    *(d.as_mut_ptr().add(16) as *mut u32) = 0; // NodeMask
+    // Console-only argument types (e.g. 0x69 with a 12-byte stride = dispatch) -> PC DISPATCH.
+    let n = *(desc.add(4) as *const u32) as usize;
+    let src = *(desc.add(8) as *const *const u32);
+    let mut args: Vec<[u32; 4]> = (0..n).map(|i| *(src.add(i * 4) as *const [u32; 4])).collect();
+    for a in args.iter_mut() {
+        if a[0] > 11 {
+            a[0] = 2;
+            a[1] = 0;
+            a[2] = 0;
+            a[3] = 0;
+        }
+    }
+    *(d.as_mut_ptr().add(8) as *mut *const [u32; 4]) = args.as_ptr();
+    let hr = f(inner, d.as_ptr(), rs, riid, out);
+    if hr < 0 {
+        let (stride, n, args) = (*(desc as *const u32), *(desc.add(4) as *const u32), *(desc.add(8) as *const *const u32));
+        let a: Vec<String> = (0..n as usize).map(|i| format!("{:x}/{:x}/{:x}/{:x}", *args.add(i * 4), *args.add(i * 4 + 1), *args.add(i * 4 + 2), *args.add(i * 4 + 3))).collect();
+        log_d3d12(&format!("[d3d12x] CommandSignature stride={stride} n={n} rs={rs:?} args=[{}] -> {:08x}", a.join(" "), hr as u32));
+    }
+    hr
+}
+
+/// Console queue slot 18 = GetTimestampFrequency(u64*) (title passes an 8-byte out). PC slot 18 is
+/// GetDesc (16-byte write, smashed the caller's saved rbx); forward to PC slot 16.
+/// Console queue layout is PC shifted by 2 from slot 14: 16 Signal, 17 Wait, 18 GetTimestampFrequency,
+/// 19 GetClockCalibration, 20 GetDesc. Forwarding 16 to PC 16 wrote 1e9 over the title's fences.
+unsafe extern "system" fn queue_signal(q: *mut c_void, fence: *mut c_void, v: u64) -> i32 {
+    qtrace('S', q, fence, v);
+    let f: unsafe extern "system" fn(*mut c_void, *mut c_void, u64) -> i32 = std::mem::transmute(console_list::queue_orig(q, 14));
+    f(q, fence, v)
+}
+/// Debug: first 400 queue Signal/Wait calls with the fence's vtable and completed value.
+unsafe fn qtrace(k: char, q: *mut c_void, fence: *mut c_void, v: u64) {
+    static N: AtomicU32 = AtomicU32::new(0);
+    if N.fetch_add(1, Ordering::Relaxed) >= 400 || fence.is_null() { return; }
+    let vt0 = *(fence as *const usize);
+    let gcv: unsafe extern "system" fn(*mut c_void) -> u64 = std::mem::transmute(*(vt0 as *const usize).add(8));
+    log_d3d12(&format!("[qtrace] {k} q={:#x} fence={:#x} vt={vt0:#x} v={v} done={} from G+{:x}", q as usize, fence as usize, gcv(fence), guest_ra().wrapping_sub(0x1_4000_0000)));
+}
+unsafe extern "system" fn queue_wait(q: *mut c_void, fence: *mut c_void, v: u64) -> i32 {
+    qtrace('W', q, fence, v);
+    let f: unsafe extern "system" fn(*mut c_void, *mut c_void, u64) -> i32 = std::mem::transmute(console_list::queue_orig(q, 15));
+    {
+        // Debug: GPU waits on values not yet reached; a watcher logs any still pending after 2 s.
+        let gcv: unsafe extern "system" fn(*mut c_void) -> u64 = std::mem::transmute(*(*(fence as *const *const usize)).add(8));
+        let done = gcv(fence);
+        static N: AtomicU32 = AtomicU32::new(0);
+        if done < v {
+            let (fu, ra, qa) = (fence as usize, guest_ra().wrapping_sub(0x1_4000_0000), q as usize);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let now = gcv(fu as *mut c_void);
+                if now < v && now != u64::MAX && N.fetch_add(1, Ordering::Relaxed) < 16 { log_d3d12(&format!("[qwait] STUCK q={qa:#x} fence={fu:#x} want={v} at_call={done} now={now} from G+{ra:x}")); }
+            });
+        }
+    }
+    f(q, fence, v)
+}
+unsafe extern "system" fn queue_clock_calibration(q: *mut c_void, gpu: *mut u64, cpu: *mut u64) -> i32 {
+    let f: unsafe extern "system" fn(*mut c_void, *mut u64, *mut u64) -> i32 = std::mem::transmute(console_list::queue_orig(q, 17));
+    f(q, gpu, cpu)
+}
+unsafe extern "system" fn queue_get_desc(q: *mut c_void, ret: *mut c_void) -> *mut c_void {
+    let f: unsafe extern "system" fn(*mut c_void, *mut c_void) -> *mut c_void = std::mem::transmute(console_list::queue_orig(q, 18));
+    f(q, ret)
+}
+/// Console queue slots 8/9 sit where PC has UpdateTileMappings / CopyTileMappings. Forwarding the
+/// console arguments raw is suspected of removing the device (887a0001): log and drop.
+/// shortcut: no tile mappings; tiled resources stay unmapped until the console layout is decoded.
+unsafe extern "system" fn queue_tile_map(q: usize, a: usize, b: usize, c: usize, d: usize, e: usize) {
+    static N: AtomicU32 = AtomicU32::new(0);
+    if N.fetch_add(1, Ordering::Relaxed) < 8 { log_d3d12(&format!("[qx] slot 8/9 tile-map dropped q={q:#x} ({a:#x},{b:#x},{c:#x},{d:#x},{e:#x}) from G+{:x}", guest_ra().wrapping_sub(0x1_4000_0000))); }
+}unsafe extern "system" fn queue_slot14(q: usize, a: usize, b: usize, c: usize) -> i32 {
+    static S: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !S.swap(true, Ordering::Relaxed) { log_d3d12(&format!("[qx] slot 14 (unimpl) q={q:#x} ({a:#x},{b:#x},{c:#x}) from G+{:x}", guest_ra().wrapping_sub(0x1_4000_0000))); }
+    0
+}
+unsafe extern "system" fn queue_slot15(q: usize, a: usize, b: usize, c: usize) -> i32 {
+    static S: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !S.swap(true, Ordering::Relaxed) { log_d3d12(&format!("[qx] slot 15 (unimpl) q={q:#x} ({a:#x},{b:#x},{c:#x}) from G+{:x}", guest_ra().wrapping_sub(0x1_4000_0000))); }
+    0
+}
+unsafe extern "system" fn queue_timestamp_freq(this: *mut c_void, out: *mut u64) -> i32 {
+    let f: unsafe extern "system" fn(*mut c_void, *mut u64) -> i32 = std::mem::transmute(console_list::queue_orig(this, 16));
+    let hr = f(this, out);
+    static N: AtomicU32 = AtomicU32::new(0);
+    if N.fetch_add(1, Ordering::Relaxed) < 8 { log_d3d12(&format!("[qx] slot18 TimestampFrequency out={out:p} from G+{:x} -> {:x}", guest_ra().wrapping_sub(0x1_4000_0000), if out.is_null() { 0 } else { *out })); }
+    hr
+}
+
+/// Console slot 55 (+0x1b8) CreatePipelineStateCloneX(src, flags, desc, riid, out): call site
+/// reads *out right after. Returns the AddRef'd source (or placeholder) until real cloning.
+unsafe extern "system" fn devx_pso_clone_x(_this: *mut c_void, src: *mut c_void, _flags: u32, _desc: *const c_void, _riid: *const c_void, out: *mut *mut c_void) -> i32 {
+    if out.is_null() {
+        return 0x8000_4003u32 as i32;
+    }
+    let p = if !src.is_null() { src } else { match pso_guard::fallback() { Some(f) => f, None => return 0x8000_4005u32 as i32 } };
+    if !src.is_null() {
+        let vt = *(src as *const *const usize);
+        let addref: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(*vt.add(1));
+        addref(src);
+    }
+    *out = p;
+    0
+}
+
+unsafe extern "system" fn devx_notimpl() -> i32 {
+    0x8000_4001u32 as i32
+}
+
+/// Console fence: slot 11 (+0x58) GetGpuVirtualAddress, slot 12 (+0x60) GetCpuVirtualAddress -> u64*
+/// the title polls (MONITORX loop) as the completed value. A poller mirrors GetCompletedValue there.
+static FENCE_CELLS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new()); // (fence, cell)
+fn fence_cell(fence: *mut c_void) -> *mut u64 {
+    let mut v = FENCE_CELLS.lock().unwrap();
+    if let Some(&(_, c)) = v.iter().find(|e| e.0 == fence as usize) { return c as *mut u64; }
+    let c = Box::leak(Box::new(0u64)) as *mut u64 as usize; // shortcut: cells/fences never freed; prune on Release if leaks matter
+    unsafe { *(c as *mut u64) = fence_completed(fence); }
+    v.push((fence as usize, c));
+    if v.len() == 1 {
+        std::thread::spawn(|| loop {
+            let list: Vec<(usize, usize)> = FENCE_CELLS.lock().unwrap().clone();
+            for (f, c) in list {
+                // Diagnostic: the title has been seen writing into fence objects (vtable = 1e9).
+                let vt = unsafe { *(f as *const usize) };
+                if !(0x10000..0x7fff_ffff_ffff).contains(&vt) || vt == 1_000_000_000 {
+                    static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if !ONCE.swap(true, Ordering::Relaxed) { log_d3d12(&format!("[d3d12x] fence {f:#x} clobbered: [0]={vt:#x} [1..4]={:x?}", unsafe { std::slice::from_raw_parts((f as *const u64).add(1), 4) })); }
+                    continue;
+                }
+                unsafe { std::ptr::write_volatile(c as *mut u64, fence_completed(f as *mut c_void)); }
+            }
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        });
+    }
+    c as *mut u64
+}
+fn fence_completed(fence: *mut c_void) -> u64 {
+    unsafe {
+        let gcv: unsafe extern "system" fn(*mut c_void) -> u64 = std::mem::transmute(*(*(fence as *const *const usize)).add(8));
+        gcv(fence)
+    }
+}
+unsafe extern "system" fn fence_cpu_va(fence: *mut c_void) -> *mut u64 { fence_cell(fence) }
+// shortcut: not a real GPU VA; fine while the title only reads it on the CPU. Upgrade if GPU writes appear.
+unsafe extern "system" fn fence_gpu_va(fence: *mut c_void) -> u64 { fence_cell(fence) as u64 }
+/// Logged forwarders for PC device slots otherwise tail-jumped: first call + the first slot after
+/// which the device reports removed (DRED showed an INVALID_CALL removal with no GPU work).
+mod dev_watch {
+    use super::*;
+    static REMOVED_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    pub(super) unsafe fn after(slot: usize, inner: *mut c_void, a: [usize; 5], r: usize) {
+        if REMOVED_SEEN.load(Ordering::Relaxed) { return; }
+        let rr: unsafe extern "system" fn(*mut c_void) -> i32 = std::mem::transmute(*(*(inner as *const *const usize)).add(37));
+        let x = rr(inner);
+        if x != 0 && !REMOVED_SEEN.swap(true, Ordering::Relaxed) {
+            log_d3d12(&format!("[devwatch] device removed {:08x} right after slot {slot} args=({:#x},{:#x},{:#x},{:#x},{:#x}) -> {r:#x} from G+{:x}", x as u32, a[0], a[1], a[2], a[3], a[4], guest_ra().wrapping_sub(0x1_4000_0000)));
+        }
+    }
+    macro_rules! lw {
+        ($name:ident, $n:literal) => {
+            pub(super) unsafe extern "system" fn $name(this: *mut c_void, a: usize, b: usize, c: usize, d: usize, e: usize) -> usize {
+                static S: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !S.swap(true, Ordering::Relaxed) { log_d3d12(&format!("[devwatch] slot {} first call ({a:#x},{b:#x},{c:#x}) from G+{:x}", $n, guest_ra().wrapping_sub(0x1_4000_0000))); }
+                let (inner, f) = devx_inner_fn(this, $n);
+                let f: unsafe extern "system" fn(*mut c_void, usize, usize, usize, usize, usize) -> usize = std::mem::transmute(f);
+                let r = f(inner, a, b, c, d, e);
+                after($n, inner, [a, b, c, d, e], r);
+                r
+            }
+        };
+    }
+    lw!(w13, 13); lw!(w28, 28); lw!(w30, 30); lw!(w31, 31); lw!(w32, 32); lw!(w33, 33); lw!(w34, 34); lw!(w35, 35); lw!(w39, 39);
+    /// PC slot 39 CreateQueryHeap(desc{Type, Count, NodeMask}, riid, out).
+    pub(super) unsafe extern "system" fn w39q(this: *mut c_void, desc: *const [u32; 3], riid: usize, out: usize) -> i32 {
+        let (inner, f) = devx_inner_fn(this, 39);
+        let f: unsafe extern "system" fn(*mut c_void, *const [u32; 3], usize, usize) -> i32 = std::mem::transmute(f);
+        let d = if desc.is_null() { [0; 3] } else { *desc };
+        // Type 2 (pipeline statistics) removed the device (887a0001) on NVIDIA: hand out a timestamp
+        // heap of the same count. shortcut: stats queries read back timestamps; fine until a title reads them.
+        let pc = [if d[0] == 2 { 1 } else { d[0] }, d[1], 0];
+        let hr = f(inner, if desc.is_null() { desc } else { &pc }, riid, out);
+        static N: AtomicU32 = AtomicU32::new(0);
+        if N.fetch_add(1, Ordering::Relaxed) < 24 || hr < 0 { log_d3d12(&format!("[devwatch] CreateQueryHeap type={} count={} node={:#x} -> {:08x} from G+{:x}", d[0], d[1], d[2], hr as u32, guest_ra().wrapping_sub(0x1_4000_0000))); }
+        after(39, inner, [desc as usize, riid, out, 0, 0], hr as usize);
+        hr
+    }
+    /// PC slot 40 SetStablePowerState: removes the device without Developer Mode; console has no
+    /// equivalent need. Logged no-op.
+    pub(super) unsafe extern "system" fn w40(_this: *mut c_void, en: i32) -> i32 {
+        log_d3d12(&format!("[devwatch] SetStablePowerState({en}) ignored from G+{:x}", guest_ra().wrapping_sub(0x1_4000_0000)));
+        0
+    }
+}
+/// Console-only command allocator slots 9..15 (PC ends at 8 Reset). The title calls slot 9 (+0x48)
+/// with (callback, ctx); on a PC allocator that ran D3D12Core code past the vtable.
+mod alloc_stubs {
+    use super::*;
+    macro_rules! xa {
+        ($name:ident, $n:literal) => {
+            unsafe extern "system" fn $name(a: usize, b: usize, c: usize, d: usize) -> usize {
+                static S: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !S.swap(true, Ordering::Relaxed) { log_d3d12(&format!("[alloc] slot {} (unimpl) this={a:#x} ({b:#x},{c:#x},{d:#x}) from G+{:x}", $n, guest_ra().wrapping_sub(0x1_4000_0000))); }
+                0
+            }
+        };
+    }
+    xa!(a9, 9); xa!(a10, 10); xa!(a11, 11); xa!(a12, 12); xa!(a13, 13); xa!(a14, 14); xa!(a15, 15);
+    pub(super) fn slots() -> [usize; 7] { [a9 as usize, a10 as usize, a11 as usize, a12 as usize, a13 as usize, a14 as usize, a15 as usize] }
+}
+/// Slot 9 CreateCommandAllocator(type, riid, out): PC allocator + console slots 9..15.
+unsafe extern "system" fn devx_create_command_allocator(this: *mut c_void, ty: u32, riid: *const c_void, out: *mut *mut c_void) -> i32 {
+    let (inner, f) = devx_inner_fn(this, 9);
+    let f: unsafe extern "system" fn(*mut c_void, u32, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(f);
+    let ty = if ty == 16 { 3 } else { ty }; // console DMA -> copy
+    let hr = f(inner, ty, riid, out);
+    if hr >= 0 && !out.is_null() && !(*out).is_null() {
+        let over: Vec<(usize, usize)> = alloc_stubs::slots().into_iter().enumerate().map(|(i, f)| (9 + i, f)).collect();
+        patch_object(*out, 16, &over);
+    }
+    hr
+}
+/// Console-only fence slots 13..31: unknown; log first use with args.
+mod fence_stubs {
+    use super::*;
+    macro_rules! xf {
+        ($name:ident, $n:literal) => {
+            unsafe extern "system" fn $name(a: usize, b: usize, c: usize, d: usize) -> usize {
+                static S: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !S.swap(true, Ordering::Relaxed) { log_d3d12(&format!("[fence] slot {} (unimpl) this={a:#x} ({b:#x},{c:#x},{d:#x}) from G+{:x}", $n, guest_ra().wrapping_sub(0x1_4000_0000))); }
+                0
+            }
+        };
+    }
+    xf!(f13, 13);
+    xf!(f14, 14);
+    xf!(f15, 15);
+    xf!(f16, 16);
+    xf!(f17, 17);
+    xf!(f18, 18);
+    xf!(f19, 19);
+    xf!(f20, 20);
+    xf!(f21, 21);
+    xf!(f22, 22);
+    xf!(f23, 23);
+    xf!(f24, 24);
+    xf!(f25, 25);
+    xf!(f26, 26);
+    xf!(f27, 27);
+    xf!(f28, 28);
+    xf!(f29, 29);
+    xf!(f30, 30);
+    xf!(f31, 31);
+    pub(super) fn slots() -> [usize; 19] { [f13 as usize, f14 as usize, f15 as usize, f16 as usize, f17 as usize, f18 as usize, f19 as usize, f20 as usize, f21 as usize, f22 as usize, f23 as usize, f24 as usize, f25 as usize, f26 as usize, f27 as usize, f28 as usize, f29 as usize, f30 as usize, f31 as usize] }
+}
+/// Slot 36 (+0x120) CreateFence(initial, flags, riid, out): PC fence with the console slots 11/12.
+unsafe extern "system" fn devx_create_fence(this: *mut c_void, init: u64, flags: u32, riid: *const c_void, out: *mut *mut c_void) -> i32 {
+    let (inner, f) = devx_inner_fn(this, 36);
+    let f: unsafe extern "system" fn(*mut c_void, u64, u32, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(f);
+    let hr = f(inner, init, flags & 0x7, riid, out);
+    if hr >= 0 && !out.is_null() && !(*out).is_null() {
+        if pso_guard::dir().join("percy_watch_fence").exists() { watch::arm(*out as usize); }
+        let mut over = vec![(11, fence_gpu_va as usize), (12, fence_cpu_va as usize)];
+        over.extend(fence_stubs::slots().into_iter().enumerate().map(|(i, f)| (13 + i, f)));
+        patch_object(*out, 32, &over);
+    }
+    static N: AtomicU32 = AtomicU32::new(0);
+    if N.fetch_add(1, Ordering::Relaxed) < 64 { log_d3d12(&format!("[d3d12x] CreateFence(init={init}, flags={flags:#x}) -> {:08x} {:p} from G+{:x}", hr as u32, if out.is_null() { std::ptr::null_mut() } else { *out }, guest_ra().wrapping_sub(0x1_4000_0000))); }
+    hr
+}
+
+static FRAME_INTERVAL_US: AtomicU32 = AtomicU32::new(16_667);
+/// Slot 78 (+0x270) SetFrameIntervalX(output, intervalUs, periodInIntervals, flags).
+unsafe extern "system" fn devx_set_frame_interval(_this: *mut c_void, _out: *mut c_void, us: u32, period: u32, _flags: u32) -> i32 {
+    if us >= 1000 { FRAME_INTERVAL_US.store(us, Ordering::Relaxed); }
+    log_d3d12(&format!("[d3d12x] SetFrameIntervalX {us}us period={period}"));
+    0
+}
+/// Slot 80 (+0x280) WaitFrameEventX(type, timeout, result, flags, *token): title passes the token on
+/// to queue slot 32 (PresentX); write a non-zero, increasing frame token.
+unsafe extern "system" fn devx_wait_frame_event(_this: *mut c_void, ty: u32, _timeout: u32, _res: *mut c_void, _flags: u32, token: *mut u64) -> i32 {
+    static T: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let t = T.fetch_add(1, Ordering::Relaxed) + 1;
+    // Frame clock: type 0 (origin) fires once per SetFrameIntervalX interval; other types fire with it.
+    if ty == 0 {
+        static NEXT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+        let iv = std::time::Duration::from_micros(FRAME_INTERVAL_US.load(Ordering::Relaxed) as u64);
+        let mut g = NEXT.lock().unwrap();
+        let now = std::time::Instant::now();
+        let next = g.map_or(now, |n| if n + iv < now { now } else { n });
+        if next > now { std::thread::sleep(next - now); }
+        *g = Some(next + iv);
+    }
+    if !token.is_null() { *token = t; }
+    if t <= 4 || t.is_power_of_two() { log_d3d12(&format!("[d3d12x] WaitFrameEventX type={ty} token={t}")); }
+    0
+}
+
+/// Console slot 127: CreateCommittedResource3(props, heapFlags, desc1, layout, clear, session,
+/// nCastable, castable, riid, out) -> PC ID3D12Device10 slot 76. Console layout/flags sanitized.
+unsafe extern "system" fn devx_create_committed_resource3(
+    this: *mut c_void, props: *const u32, flags: u32, desc: *const u8, layout: u32, clear: *const c_void,
+    session: *mut c_void, ncast: u32, cast: *const u32, riid: *const c_void, out: *mut *mut c_void,
+) -> i32 {
+    let (inner, f) = devx_inner_fn(this, 76);
+    let f: unsafe extern "system" fn(*mut c_void, *const u32, u32, *const u8, u32, *const c_void, *mut c_void, u32, *const u32, *const c_void, *mut *mut c_void) -> i32 =
+        std::mem::transmute(f);
+    // D3D12_RESOURCE_DESC1 = DESC (56 B) + SamplerFeedbackMipRegion (12 B).
+    let mut d = [0u8; 72];
+    if !desc.is_null() {
+        std::ptr::copy_nonoverlapping(desc, d.as_mut_ptr(), 68);
+        let fl = d.as_mut_ptr().add(48) as *mut u32;
+        *fl &= PC_RESOURCE_FLAGS;
+    }
+    let lay = if layout > 0x30 { 0 } else { layout }; // D3D12_BARRIER_LAYOUT_COMMON
+    let hf = flags & 0xFFFF;
+    let hr = f(inner, props, hf, d.as_ptr(), lay, clear, session, ncast, cast, riid, out);
+    static N: AtomicU32 = AtomicU32::new(0);
+    if N.fetch_add(1, Ordering::Relaxed) < 6 || hr < 0 {
+        log_d3d12(&format!("[d3d12x] CommittedResource3 heap={} dim={} w={} layout={layout:#x} flags={flags:#x} -> {:08x}",
+            if props.is_null() { 99 } else { *props }, d[0], *(d.as_ptr().add(16) as *const u64), hr as u32));
+    }
+    if hr >= 0 && !out.is_null() {
+        patch_resource(*out);
+    }
+    hr
+}
+
+/// Console PSO creator (desc, riid, out) used for both graphics and compute descs.
+/// Graphics descs carry a PS pointer at +0x18; compute descs carry NodeMask (small) there.
+unsafe extern "system" fn devx_create_pso_any(this: *mut c_void, desc: *const u8, riid: *const c_void, out: *mut *mut c_void) -> i32 {
+    if desc.is_null() {
+        return 0x8007_0057u32 as i32;
+    }
+    // Console desc layout differs from PC (forwarding it corrupted the device): placeholder
+    // until decoded.
+    if std::env::var("PERCY_PSO_ANY_FWD").is_err() {
+        if let Some(fb) = pso_guard::fallback() {
+            static N0: AtomicU32 = AtomicU32::new(0);
+            if N0.fetch_add(1, Ordering::Relaxed) < 2 {
+                let w: Vec<String> = (0..24).map(|i| format!("{:x}", *(desc as *const u32).add(i))).collect();
+                log_d3d12(&format!("[d3d12x] PSO-any desc {} riid ok -> placeholder", w.join(" ")));
+            }
+            *out = fb;
+            return 0;
+        }
+    }
+    let at18 = *(desc.add(0x18) as *const usize);
+    let graphics = at18 > 0x10000 || *(desc.add(0x20) as *const usize) > 0x10000 && *(desc.add(0x28) as *const usize) < 0x100000;
+    let hr = if graphics { devx_create_graphics_pso(this, desc, riid, out) } else { devx_create_compute_pso(this, desc, riid, out) };
+    static N: AtomicU32 = AtomicU32::new(0);
+    if N.fetch_add(1, Ordering::Relaxed) < 8 || hr < 0 {
+        let sh = |o: usize| { let p = *(desc.add(o) as *const *const u8); let n = *(desc.add(o + 8) as *const usize); format!("{}:{:#x}", shader_kind(p, n), n) };
+        log_d3d12(&format!("[d3d12x] PSO-any {} vs={} ps={} -> {:08x}", if graphics { "graphics" } else { "compute" }, sh(8), sh(0x18), hr as u32));
+    }
+    if hr < 0 && !out.is_null() {
+        // Placeholder so init proceeds; real shaders need the console-ISA translator.
+        if let Some(fb) = pso_guard::fallback() {
+            *out = fb;
+            return 0;
+        }
+    }
+    hr
+}
+
+/// Console slot 86: CreatePipelineState({SizeInBytes, pStream}, riid, out) -> PC Device2 slot 47.
+unsafe extern "system" fn devx_create_pso_stream(this: *mut c_void, desc: *const u8, riid: *const c_void, out: *mut *mut c_void) -> i32 {
+    // Console graphics streams (shaders absent / console ISA) can crash the PC driver: placeholder.
+    if std::env::var("PERCY_PSO_STREAM_FWD").is_err() {
+        if let Some(fb) = pso_guard::fallback() {
+            *out = fb;
+            return 0;
+        }
+    }
+    let (inner, f) = devx_inner_fn(this, 47);
+    let f: unsafe extern "system" fn(*mut c_void, *const u8, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(f);
+    let hr = f(inner, desc, riid, out);
+    if hr >= 0 && !out.is_null() {
+        *out = replay::wrap_pso(*out);
+    }
+    static DUMPED: AtomicU32 = AtomicU32::new(0);
+    if hr < 0 && DUMPED.fetch_add(1, Ordering::Relaxed) < 2 && !desc.is_null() {
+        // Dump raw stream as u32 words (subobject type tags + payload) for layout analysis.
+        let (n, p) = (*(desc as *const usize), *(desc.add(8) as *const *const u32));
+        let w: Vec<String> = (0..n / 4).map(|i| format!("{:x}", *p.add(i))).collect();
+        log_d3d12(&format!("[d3d12x] PSO-stream dump {}", w.join(" ")));
+    }
+    static N: AtomicU32 = AtomicU32::new(0);
+    if N.fetch_add(1, Ordering::Relaxed) < 8 || hr < 0 {
+        log_d3d12(&format!("[d3d12x] PSO-stream size={:#x} -> {:08x}", if desc.is_null() { 0 } else { *(desc as *const usize) }, hr as u32));
+    }
+    if hr < 0 && !out.is_null() {
+        // Placeholder so init proceeds; real shaders need the console-ISA translator.
+        if let Some(fb) = pso_guard::fallback() {
+            *out = fb;
+            return 0;
+        }
+    }
+    hr
+}
+
 /// PC-defined D3D12_RESOURCE_FLAGS bits (RT .. RAYTRACING_ACCELERATION_STRUCTURE).
 const PC_RESOURCE_FLAGS: u32 = 0x1FF;
 /// Copies a D3D12_RESOURCE_DESC (56 bytes) and strips console-only resource flags (e.g. 0x20000),
@@ -1221,9 +1920,20 @@ unsafe fn sanitize_resource_desc(desc: *const u8) -> [u64; 7] {
         return d;
     }
     std::ptr::copy_nonoverlapping(desc, d.as_mut_ptr() as *mut u8, 56);
+    // Layout (u32 @44): console swizzle modes are not PC D3D12_TEXTURE_LAYOUT values (0..3).
+    let layout = (d.as_mut_ptr() as *mut u8).add(44) as *mut u32;
+    if *layout > 3 {
+        *layout = 0;
+    }
+    // Alignment: PC accepts 0, 4 KiB, 64 KiB, 4 MiB only.
+    if ![0u64, 0x1000, 0x10000, 0x40_0000].contains(&d[1]) {
+        d[1] = 0;
+    }
     let flags = (d.as_mut_ptr() as *mut u8).add(48) as *mut u32;
     if *flags & !PC_RESOURCE_FLAGS != 0 {
-        log_d3d12(&format!("[d3d12x] stripped console resource flags {:#x}", *flags & !PC_RESOURCE_FLAGS));
+        static SN: AtomicU32 = AtomicU32::new(0);
+        let k = SN.fetch_add(1, Ordering::Relaxed);
+        if k < 16 || k.is_power_of_two() { log_d3d12(&format!("[d3d12x] stripped console resource flags {:#x}", *flags & !PC_RESOURCE_FLAGS)); }
         *flags &= PC_RESOURCE_FLAGS;
     }
     d
@@ -1244,9 +1954,46 @@ static PSO_LOGGED: AtomicU32 = AtomicU32::new(0);
 unsafe extern "system" fn devx_create_graphics_pso(this: *mut c_void, desc: *const u8, riid: *const c_void, out: *mut *mut c_void) -> i32 {
     let (inner, f) = devx_inner_fn(this, 10);
     let f: unsafe extern "system" fn(*mut c_void, *const u8, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(f);
-    let hr = f(inner, desc, riid, out);
+    let h = if desc.is_null() { 0 } else { pso_guard::hash(*(desc.add(8) as *const *const u8), *(desc.add(16) as *const usize)) };
+    if pso_guard::is_bad(h) {
+        if let Some(fb) = pso_guard::fallback() {
+            log_d3d12(&format!("[d3d12x] ComputePSO {h:016x} known to hang the driver: fallback PSO"));
+            *out = fb;
+            return 0;
+        }
+    }
+    // Raw console ISA (not a DXBC container) crashes the PC driver: never forward it.
+    let sh = if desc.is_null() { "none" } else { shader_kind(*(desc.add(8) as *const *const u8), *(desc.add(16) as *const usize)) };
+    if sh == "console-ISA" {
+        static CI: AtomicU32 = AtomicU32::new(0);
+        if CI.fetch_add(1, Ordering::Relaxed) < 3 {
+            log_d3d12("[d3d12x] PSO with console-ISA shader -> placeholder (translator pending)");
+        }
+        if let Some(fb) = pso_guard::fallback() {
+            *out = fb;
+            return 0;
+        }
+        return 0x8007_0057u32 as i32;
+    }
+    // Experiment flag: after one good compute PSO, answer every other one with it (isolates driver-side
+    // faults in title DXIL compute compiles from device removal).
+    if pso_guard::dir().join("percy_cs_fallback").exists() {
+        if let Some(fb) = pso_guard::fallback() { *out = fb; return 0; }
+    }
+    pso_guard::begin(h);
+    let mut hr = f(inner, desc, riid, out);
+    if pso_guard::end() && hr >= 0 && !out.is_null() && !(*out).is_null() {
+        let rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(*(*(*out as *const *const usize)).add(2));
+        rel(*out);
+        *out = std::ptr::null_mut();
+        match pso_guard::fallback() {
+            Some(fb) => { *out = fb; return 0; }
+            None => hr = 0x8000_4005u32 as i32,
+        }
+    }
     if hr >= 0 && !out.is_null() {
         *out = replay::wrap_pso(*out);
+        pso_guard::set_fallback(*out);
     }
     if PSO_LOGGED.fetch_add(1, Ordering::Relaxed) < 6 && !desc.is_null() {
         // D3D12_GRAPHICS_PIPELINE_STATE_DESC: pRootSignature @0, VS {ptr,len} @8, PS @24
@@ -1262,15 +2009,140 @@ unsafe extern "system" fn devx_create_graphics_pso(this: *mut c_void, desc: *con
 unsafe extern "system" fn devx_create_compute_pso(this: *mut c_void, desc: *const u8, riid: *const c_void, out: *mut *mut c_void) -> i32 {
     let (inner, f) = devx_inner_fn(this, 11);
     let f: unsafe extern "system" fn(*mut c_void, *const u8, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(f);
-    let hr = f(inner, desc, riid, out);
+    let h = if desc.is_null() { 0 } else { pso_guard::hash(*(desc.add(8) as *const *const u8), *(desc.add(16) as *const usize)) };
+    if pso_guard::is_bad(h) {
+        if let Some(fb) = pso_guard::fallback() {
+            log_d3d12(&format!("[d3d12x] ComputePSO {h:016x} known to hang the driver: fallback PSO"));
+            *out = fb;
+            return 0;
+        }
+    }
+    // Raw console ISA (not a DXBC container) crashes the PC driver: never forward it.
+    let sh = if desc.is_null() { "none" } else { shader_kind(*(desc.add(8) as *const *const u8), *(desc.add(16) as *const usize)) };
+    if sh == "console-ISA" {
+        static CI: AtomicU32 = AtomicU32::new(0);
+        if CI.fetch_add(1, Ordering::Relaxed) < 3 {
+            log_d3d12("[d3d12x] PSO with console-ISA shader -> placeholder (translator pending)");
+        }
+        if let Some(fb) = pso_guard::fallback() {
+            *out = fb;
+            return 0;
+        }
+        return 0x8007_0057u32 as i32;
+    }
+    pso_guard::begin(h);
+    let mut hr = f(inner, desc, riid, out);
+    if pso_guard::end() && hr >= 0 && !out.is_null() && !(*out).is_null() {
+        let rel: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(*(*(*out as *const *const usize)).add(2));
+        rel(*out);
+        *out = std::ptr::null_mut();
+        match pso_guard::fallback() {
+            Some(fb) => { *out = fb; return 0; }
+            None => hr = 0x8000_4005u32 as i32,
+        }
+    }
     if hr >= 0 && !out.is_null() {
         *out = replay::wrap_pso(*out);
+        pso_guard::set_fallback(*out);
     }
     if PSO_LOGGED.fetch_add(1, Ordering::Relaxed) < 6 && !desc.is_null() {
         let cs = (*(desc.add(8) as *const *const u8), *(desc.add(16) as *const usize));
         log_d3d12(&format!("[d3d12x] CreateComputePSO cs={}({:#x}) -> {:08x}", shader_kind(cs.0, cs.1), cs.1, hr as u32));
     }
     hr
+}
+/// Driver-hang guard for compute PSOs: the bytecode hash is written to `percy_pso_pending.txt`
+/// before compiling and cleared after. A run that dies mid-compile leaves it behind; the next
+/// run moves it to `percy_pso_skip.txt` and answers that shader with the last good compute PSO.
+pub(crate) mod pso_guard {
+    use super::*;
+    /// Folder holding this DLL (the shim dir); current_exe() is virtualized to the guest path.
+    pub(crate) fn dir() -> std::path::PathBuf {
+        extern "system" {
+            fn GetModuleHandleExW(flags: u32, addr: *const c_void, out: *mut usize) -> i32;
+            fn GetModuleFileNameW(m: usize, buf: *mut u16, n: u32) -> u32;
+        }
+        static D: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        D.get_or_init(|| unsafe {
+            let mut m = 0usize;
+            GetModuleHandleExW(0x6, dir as *const c_void, &mut m); // FROM_ADDRESS | UNCHANGED_REFCOUNT
+            let mut b = [0u16; 520];
+            let n = GetModuleFileNameW(m, b.as_mut_ptr(), 520) as usize;
+            std::path::PathBuf::from(String::from_utf16_lossy(&b[..n])).parent().map(|d| d.to_path_buf()).unwrap_or_default()
+        }).clone()
+    }
+    pub unsafe fn hash(p: *const u8, n: usize) -> u64 {
+        if p.is_null() { return 0; }
+        std::slice::from_raw_parts(p, n).iter().fold(0xcbf29ce484222325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100000001b3))
+    }
+    fn skip() -> &'static Vec<u64> {
+        static S: std::sync::OnceLock<Vec<u64>> = std::sync::OnceLock::new();
+        S.get_or_init(|| {
+            let d = dir();
+            let (pend, list) = (d.join("percy_pso_pending.txt"), d.join("percy_pso_skip.txt"));
+            let mut txt = std::fs::read_to_string(&list).unwrap_or_default();
+            if let Ok(p) = std::fs::read_to_string(&pend) {
+                if !p.trim().is_empty() && !txt.contains(p.trim()) {
+                    txt.push_str(p.trim());
+                    txt.push('\n');
+                    let _ = std::fs::write(&list, &txt);
+                }
+                let _ = std::fs::remove_file(&pend);
+            }
+            txt.lines().filter_map(|l| u64::from_str_radix(l.trim(), 16).ok()).collect()
+        })
+    }
+    pub fn is_bad(h: u64) -> bool { h != 0 && skip().contains(&h) }
+    pub fn begin(h: u64) {
+        let _ = skip();
+        static V: std::sync::Once = std::sync::Once::new();
+        V.call_once(|| unsafe { super::mirror::AddVectoredExceptionHandler(1, veh); });
+        CUR.with(|c| c.set(h.max(1)));
+        AV.with(|c| c.set(false));
+        let r = std::fs::write(dir().join("percy_pso_pending.txt"), format!("{h:016x}"));
+        static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !ONCE.swap(true, Ordering::Relaxed) {
+            log_d3d12(&format!("[pso_guard] dir={} write={:?}", dir().display(), r.err()));
+        }
+    }
+    /// True if the driver faulted (and swallowed the AV) while compiling: the PSO it returns then
+    /// crashes later in SetPipelineState (null+8). Such shaders join the skip list.
+    pub fn end() -> bool {
+        let _ = std::fs::write(dir().join("percy_pso_pending.txt"), "");
+        let (h, av) = (CUR.with(|c| c.replace(0)), AV.with(|c| c.replace(false)));
+        if av && h > 1 {
+            let list = dir().join("percy_pso_skip.txt");
+            let mut txt = std::fs::read_to_string(&list).unwrap_or_default();
+            txt.push_str(&format!("{h:016x}\n"));
+            let _ = std::fs::write(&list, txt);
+        }
+        if av {
+            log_d3d12(&format!("[pso_guard] driver AV while compiling {h:016x} -> placeholder, skipped from now on"));
+        }
+        av
+    }
+    thread_local! {
+        static CUR: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        static AV: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    unsafe extern "system" fn veh(info: *const c_void) -> i32 {
+        if **(info as *const *const u32) == 0xC000_0005 && CUR.with(|c| c.get()) != 0 {
+            AV.with(|c| c.set(true));
+        }
+        0
+    }
+    static FB: AtomicUsize = AtomicUsize::new(0);
+    pub fn set_fallback(p: *mut c_void) { if FB.load(Ordering::Relaxed) == 0 { unsafe { addref(p) }; FB.store(p as usize, Ordering::Relaxed); } }
+    pub fn fallback_raw() -> usize { FB.load(Ordering::Relaxed) }
+    pub unsafe fn fallback() -> Option<*mut c_void> {
+        let p = FB.load(Ordering::Relaxed) as *mut c_void;
+        if p.is_null() { None } else { addref(p); Some(p) }
+    }
+    unsafe fn addref(p: *mut c_void) {
+        let vt = *(p as *const *const usize);
+        let f: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(*vt.add(1));
+        f(p);
+    }
 }
 static RS_LOGGED: AtomicU32 = AtomicU32::new(0);
 unsafe extern "system" fn devx_create_root_signature(this: *mut c_void, node: u32, blob: *const u8, len: usize, riid: *const c_void, out: *mut *mut c_void) -> i32 {
@@ -1280,8 +2152,8 @@ unsafe extern "system" fn devx_create_root_signature(this: *mut c_void, node: u3
     if hr >= 0 && !out.is_null() {
         replay::register_rs(*out, blob, len);
     }
-    if RS_LOGGED.fetch_add(1, Ordering::Relaxed) < 4 {
-        log_d3d12(&format!("[d3d12x] CreateRootSignature blob={}({len:#x}) -> {:08x}", shader_kind(blob, len), hr as u32));
+    if RS_LOGGED.fetch_add(1, Ordering::Relaxed) < 4 || hr < 0 {
+        log_d3d12(&format!("[d3d12x] CreateRootSignature node={node:#x} blob={}({len:#x}) -> {:08x}", shader_kind(blob, len), hr as u32));
     }
     hr
 }
@@ -1660,18 +2532,36 @@ unsafe extern "system" fn queue_execute(this: *mut c_void, n: u32, lists: *const
     static DR: AtomicU32 = AtomicU32::new(0);
     let k = DR.fetch_add(1, Ordering::Relaxed);
     if k.is_power_of_two() {
-        log_d3d12(&format!("[d3d12x] submits={k} binds def/uma/upl/placed/untracked={:?}", replay::BIND_KIND.iter().map(|c| c.load(Ordering::Relaxed)).collect::<Vec<_>>()));
+        let mut cs = String::new();
+        for i in 0..CL_SLOTS { let c = std::ptr::read_volatile(std::ptr::addr_of!(PERCY_CL_COUNTS[i])); if c > 0 { cs.push_str(&format!(" {i}:{c}")); } }
+        log_d3d12(&format!("[d3d12x] submits={k} binds def/uma/upl/placed/untracked={:?} clx {} census{cs}", replay::BIND_KIND.iter().map(|c| c.load(Ordering::Relaxed)).collect::<Vec<_>>(), console_list::census()));
     }
     if k < 50 {
         drain_info("execute", 6);
     }
+    // A list whose type differs from the queue's removes the device (887a0001): drop it.
+    let gdesc: unsafe extern "system" fn(*mut c_void, *mut [u32; 4]) -> *mut [u32; 4] = std::mem::transmute(console_list::queue_orig(this, 18));
+    let mut qd = [0u32; 4];
+    gdesc(this, &mut qd);
     let mut pc: Vec<*mut c_void> = (0..n as usize)
         .filter_map(|i| { let l = *lists.add(i); match console_list::inner_of(l) { Some(p) => { console_list::ensure_closed(l); if console_list::failed(l) { None } else { Some(p) } } None => Some(l) } })
+        .filter(|&p| {
+            let gt: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(*(*(p as *const *const usize)).add(8));
+            let t = gt(p);
+            if t != qd[0] {
+                static TM: AtomicU32 = AtomicU32::new(0);
+                if TM.fetch_add(1, Ordering::Relaxed) < 8 { log_d3d12(&format!("[d3d12x] dropped list type {t} on queue type {} from G+{:x}", qd[0], guest_ra().wrapping_sub(0x1_4000_0000))); }
+            }
+            t == qd[0]
+        })
         .collect();
     if !pc.is_empty() {
         mirror::flush(this);
+        let cl = std::slice::from_raw_parts(lists, n as usize);
+        cpu_writes::before_submit(cl);
         let f: unsafe extern "system" fn(*mut c_void, u32, *const *mut c_void) = std::mem::transmute(console_list::queue_orig(this, 10));
         f(this, pc.len() as u32, pc.as_mut_ptr());
+        cpu_writes::after_submit(this, cl);
     }
     console_list::signal_fences(this, n, lists);
     if pc.is_empty() { return; }
@@ -1709,10 +2599,17 @@ unsafe extern "system" fn queue_present_x(q: *mut c_void, a: usize, b: usize, c:
 unsafe extern "system" fn devx_create_command_queue(this: *mut c_void, desc: *const c_void, riid: *const c_void, out: *mut *mut c_void) -> i32 {
     let (inner, f) = devx_inner_fn(this, 8);
     let f: unsafe extern "system" fn(*mut c_void, *const c_void, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(f);
-    let hr = f(inner, desc, riid, out);
-    if !desc.is_null() { let d = desc as *const u32; log_d3d12(&format!("[d3d12x] CreateCommandQueue desc={:x} {:x} {:x} {:x} -> {:08x}", *d, *d.add(1), *d.add(2), *d.add(3), hr as u32)); }
+    // {Type, Priority, Flags, NodeMask}: keep PC flag bit DISABLE_GPU_TIMEOUT only; single node.
+    let mut pc = if desc.is_null() { [0u32; 4] } else { *(desc as *const [u32; 4]) };
+    pc[2] &= 0x1;
+    pc[3] = 0;
+    if pc[1] > 100 && pc[1] != 10000 { pc[1] = 0; }
+    let rr = || { let g: unsafe extern "system" fn(*mut c_void) -> i32 = std::mem::transmute(*(*(inner as *const *const usize)).add(37)); g(inner) as u32 };
+    let before = rr();
+    let hr = f(inner, pc.as_ptr() as *const c_void, riid, out);
+    if !desc.is_null() { let d = desc as *const u32; log_d3d12(&format!("[d3d12x] CreateCommandQueue desc={:x} {:x} {:x} {:x} -> {:08x} removed before={before:08x} after={:08x}", *d, *d.add(1), *d.add(2), *d.add(3), hr as u32, rr())); }
     if hr >= 0 && !out.is_null() {
-        console_list::patch_queue(*out, &[(10, queue_execute as usize), (30, queue_present_x as usize)]);
+        console_list::patch_queue(*out, &[(10, queue_execute as usize), (30, queue_present_x as usize), (32, queue_present_x as usize), (35, queue_execute as usize), (18, queue_timestamp_freq as usize), (8, queue_tile_map as usize), (9, queue_tile_map as usize), (14, queue_slot14 as usize), (15, queue_slot15 as usize), (16, queue_signal as usize), (17, queue_wait as usize), (19, queue_clock_calibration as usize), (20, queue_get_desc as usize)]); // +0x118 ExecuteCommandListsX(n, lists)
     }
     hr
 }
@@ -1732,13 +2629,23 @@ unsafe extern "system" fn devx_create_command_list(
     let f: unsafe extern "system" fn(*mut c_void, u32, u32, *mut c_void, *mut c_void, *const c_void, *mut *mut c_void) -> i32 =
         std::mem::transmute(*vt.add(12));
     let (ty, node) = if desc.is_null() { (0, 0) } else { (*desc, *desc.add(1)) };
-    let hr = f(inner, node, ty, allocator, replay::unwrap_pso(pso), riid, out);
+    // Host is single-node; console node/flag bits are invalid here.
+    let mut hr = f(inner, 0, ty, allocator, replay::unwrap_pso(pso), riid, out);
+    if hr == 0x80004002u32 as i32 {
+        // Console-only list IID: create the base list; console_list::wrap supplies the X surface.
+        const IID_GCL: [u8; 16] = [0x0f, 0x0d, 0x16, 0x5b, 0x1b, 0xac, 0x85, 0x41, 0x8b, 0xa8, 0xb3, 0xae, 0x42, 0xa5, 0xa4, 0x55];
+        if !riid.is_null() {
+            let g = std::slice::from_raw_parts(riid as *const u8, 16);
+            log_d3d12(&format!("[d3d12x] CreateCommandList riid {:02x?} unknown on host -> base list", g));
+        }
+        hr = f(inner, 0, ty, allocator, replay::unwrap_pso(pso), IID_GCL.as_ptr() as *const c_void, out);
+    }
     if hr >= 0 && !out.is_null() {
         if std::env::var("PERCY_CLX_OFF").is_ok() { patch_command_list(*out); } else { *out = console_list::wrap(*out); }
     }
     let rsp: usize;
     std::arch::asm!("mov {}, rsp", out(reg) rsp);
-    let ras: Vec<String> = (0..400).map(|i| *((rsp as *const usize).add(i))).filter(|&v| (0x1_4000_1000..0x1_43d0_0000).contains(&v)).take(8).map(|v| format!("{:x}", v - 0x1_4000_0000)).collect();
+    let ras: Vec<String> = (0..400).map(|i| *((rsp as *const usize).add(i))).filter(|&v| (0x1_4000_1000..0x1_4c00_0000).contains(&v)).take(8).map(|v| format!("{:x}", v - 0x1_4000_0000)).collect();
     log_d3d12(&format!("[d3d12x] CreateCommandList(type={ty}, node={node}) G+[{}] -> {:08x}", ras.join(" "), hr as u32));
     hr
 }
@@ -1746,7 +2653,7 @@ unsafe fn wrap_device_pointer(inner: *mut c_void) -> *mut c_void {
     if inner.is_null() {
         return inner;
     }
-    let mut vtbl = [xbox_slot_unimpl as *const c_void; 128];
+    let mut vtbl = [xbox_slot_unimpl as *const c_void; 192];
     vtbl[0] = proxy_qi as *const c_void;
     vtbl[1] = proxy_add_ref as *const c_void;
     vtbl[2] = proxy_release as *const c_void;
@@ -1754,8 +2661,34 @@ unsafe fn wrap_device_pointer(inner: *mut c_void) -> *mut c_void {
     {
         vtbl[3..44].copy_from_slice(&dev_fwd::SLOTS);
     }
-    vtbl[44..128].copy_from_slice(&xbox_slots::SLOTS);
+    vtbl[44..192].copy_from_slice(&xbox_slots::SLOTS);
+    vtbl[133] = devx_create_placed_resource_x as *const c_void;
+    vtbl[62] = devx_create_compute_pso_x as *const c_void;
+    vtbl[41] = devx_create_command_signature as *const c_void;
+    // Console-layout slots identified from title call sites (riid / argument shapes):
+    vtbl[48] = devx_create_command_queue as *const c_void; // (desc, riid=CommandQueue, out)
+    vtbl[57] = devx_create_pso_any as *const c_void; // (desc, riid=PipelineState, out)
+    vtbl[67] = devx_notimpl as *const c_void; // +0x218: E_NOTIMPL -> title falls back cleanly
+    vtbl[127] = devx_create_committed_resource3 as *const c_void;
+    vtbl[86] = devx_create_pso_stream as *const c_void;
+    vtbl[55] = devx_pso_clone_x as *const c_void; // +0x1b8 CreatePipelineStateCloneX(src, flags, desc, riid, out) // ({size, stream}, riid, out)
+    vtbl[61] = devx_create_sampler as *const c_void; // (desc, handle); handle tagged sampler
+    vtbl[108] = devx_get_resource_allocation_info as *const c_void; // (ret, this, mask, n, descs, info1)
     vtbl[73] = devx_create_command_list as *const c_void;
+    vtbl[80] = devx_wait_frame_event as *const c_void;
+    vtbl[78] = devx_set_frame_interval as *const c_void;
+    vtbl[36] = devx_create_fence as *const c_void;
+    vtbl[9] = devx_create_command_allocator as *const c_void;
+    vtbl[13] = dev_watch::w13 as *const c_void;
+    vtbl[28] = dev_watch::w28 as *const c_void;
+    vtbl[30] = dev_watch::w30 as *const c_void;
+    vtbl[31] = dev_watch::w31 as *const c_void;
+    vtbl[32] = dev_watch::w32 as *const c_void;
+    vtbl[33] = dev_watch::w33 as *const c_void;
+    vtbl[34] = dev_watch::w34 as *const c_void;
+    vtbl[35] = dev_watch::w35 as *const c_void;
+    vtbl[39] = dev_watch::w39q as *const c_void;
+    vtbl[40] = dev_watch::w40 as *const c_void;
     vtbl[25] = devx_get_resource_allocation_info as *const c_void;
     vtbl[26] = devx_get_custom_heap_properties as *const c_void;
     vtbl[43] = devx_get_adapter_luid as *const c_void;
@@ -1765,12 +2698,18 @@ unsafe fn wrap_device_pointer(inner: *mut c_void) -> *mut c_void {
     vtbl[10] = devx_create_graphics_pso as *const c_void;
     vtbl[11] = devx_create_compute_pso as *const c_void;
     vtbl[16] = devx_create_root_signature as *const c_void;
+    vtbl[17] = devx_create_cbv as *const c_void;
     vtbl[18] = devx_create_srv as *const c_void;
     vtbl[19] = devx_create_uav as *const c_void;
+    vtbl[20] = devx_create_rtv as *const c_void;
+    vtbl[21] = devx_create_dsv as *const c_void;
+    vtbl[22] = devx_create_sampler as *const c_void;
+    vtbl[23] = devx_copy_descriptors as *const c_void;
+    vtbl[24] = devx_copy_descriptors_simple as *const c_void;
     vtbl[8] = devx_create_command_queue as *const c_void;
     let leaked_vtbl = Box::leak(Box::new(vtbl));
     let proxy = Box::new(DeviceXProxy {
-        vtbl: leaked_vtbl as *const [*const c_void; 128],
+        vtbl: leaked_vtbl as *const [*const c_void; 192],
         inner,
         refs: AtomicU32::new(1),
     });
@@ -1961,6 +2900,7 @@ pub unsafe extern "system" fn D3D12XboxCreateDevice(
             log_d3d12(&format!("[d3d12x] debug layer -> {:08x}", r as u32));
         }
     }
+    dred::enable();
     let mut hr = D3D12CreateDevice(chosen, D3D_FEATURE_LEVEL_12_0, riid, out_device);
     let mut forced_wrap = false;
     if hr < 0 {
@@ -1987,6 +2927,7 @@ pub unsafe extern "system" fn D3D12XboxCreateDevice(
             INFO_QUEUE.store(q as usize, Ordering::Release);
             log_d3d12("[d3d12x] info queue attached");
         }
+        dred::watch(d);
         *out_device = wrap_device_pointer(*out_device);
     }
     if std::env::var("PERCY_TRACE").is_ok() {

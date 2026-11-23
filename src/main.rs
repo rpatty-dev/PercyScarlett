@@ -229,7 +229,8 @@ fn main() {
                 .find(|w| w[0] == "--limit")
                 .and_then(|w| w[1].parse::<usize>().ok())
                 .unwrap_or(0);
-            shader_bench::run_shader_benchmark(p, limit, dxil);
+            let bake = args.windows(2).find(|w| w[0] == "--bake").map(|w| std::path::PathBuf::from(&w[1]));
+            shader_bench::run_shader_benchmark_bake(p, limit, dxil || bake.is_some(), bake.as_deref());
         }
         Some("self-test") => {
             let exe_dir = std::env::current_exe()
@@ -302,7 +303,7 @@ fn main() {
             println!("  percyscarlett report <game.exe> <report.json>");
             println!("  percyscarlett run <game.exe> [--dry-run]");
             println!("  percyscarlett self-test [--open]");
-            println!("  percyscarlett bench-shaders <shaders.rpf> [--dxil] [--limit N]");
+            println!("  percyscarlett bench-shaders <shaders.rpf> [--dxil] [--limit N] [--bake <dir>]");
             println!("  percyscarlett probe-mem");
             println!("  percyscarlett shims");
         }

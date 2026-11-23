@@ -212,6 +212,10 @@ pub(crate) unsafe fn wrap_pso(p: *mut c_void) -> *mut c_void {
     if p.is_null() {
         return p;
     }
+    // Replayed records outlive the title's Release (replay is deferred): keep the PC PSO alive.
+    // shortcut: PSOs are never freed (the wrapper already leaks); upgrade with deferred release on fence.
+    let add: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(method(p, 1));
+    add(p);
     let mut pkt = [0u32; 7];
     pkt[0] = PSO_MARK;
     pkt[1] = p as usize as u32;
@@ -259,6 +263,7 @@ unsafe fn bad(obj: *mut c_void, w: &[u32], i: usize) {
 
 unsafe fn replay(obj: *mut c_void, inner: *mut c_void, w: &[u32]) {
     type F2 = unsafe extern "system" fn(*mut c_void, u32);
+    let mut ph = false; // bound PSO is the placeholder
     let mut i = 0;
     while i < w.len() {
         let h = w[i];
@@ -269,15 +274,26 @@ unsafe fn replay(obj: *mut c_void, inner: *mut c_void, w: &[u32]) {
         }
         let a = &w[i + 1..i + len];
         let q = |k: usize| a[k] as u64 | (a[k + 1] as u64) << 32;
+        {
+            static TR: AtomicU32 = AtomicU32::new(0);
+            if TR.fetch_add(1, Ordering::Relaxed) < 300 {
+                let ar: Vec<String> = a.iter().take(6).map(|x| format!("{x:x}")).collect();
+                log_d3d12(&format!("[rpl] {h:08x} [{}] obj={obj:p}", ar.join(" ")));
+            }
+        }
         match h {
             0x4004_C200 => {
-                let f: unsafe extern "system" fn(*mut c_void, u32, u32, u32, i32, u32) = std::mem::transmute(method(inner, 13));
-                f(inner, a[2], a[0], a[1], a[3] as i32, a[4]);
+                // shortcut: no translated graphics PSOs yet; the bound PSO is the compute placeholder and a
+                // draw with it removes the device on NVIDIA. Count only, until graphics translation lands.
+                if std::env::var_os("PERCY_REPLAY_DRAWS").is_some() {
+                    let f: unsafe extern "system" fn(*mut c_void, u32, u32, u32, i32, u32) = std::mem::transmute(method(inner, 13));
+                    f(inner, a[2], a[0], a[1], a[3] as i32, a[4]);
+                }
                 STATS[0].fetch_add(1, Ordering::Relaxed);
             }
             0x4002_C400 => {
                 let f: unsafe extern "system" fn(*mut c_void, u32, u32, u32) = std::mem::transmute(method(inner, 14));
-                f(inner, a[0], a[1], a[2]);
+                if !ph { f(inner, a[0], a[1], a[2]); }
                 STATS[1].fetch_add(1, Ordering::Relaxed);
             }
             0xC000_B600 => {
@@ -289,8 +305,37 @@ unsafe fn replay(obj: *mut c_void, inner: *mut c_void, w: &[u32]) {
                 f(inner, a[0]);
             }
             PSO_MARK => {
+                let pso = q(0) as usize;
+                {
+                    static PN: AtomicU32 = AtomicU32::new(0);
+                    if PN.fetch_add(1, Ordering::Relaxed) < 12 {
+                        let vt = if pso > 0x10000 { *(pso as *const usize) } else { 0 };
+                        let gt: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(method(inner, 8));
+                        let rc = if pso > 0x10000 {
+                            let ad: unsafe extern "system" fn(usize) -> u32 = std::mem::transmute(method(pso as *mut c_void, 1));
+                            let rl: unsafe extern "system" fn(usize) -> u32 = std::mem::transmute(method(pso as *mut c_void, 2));
+                            ad(pso);
+                            rl(pso)
+                        } else { 0 };
+                        const IID_DEV: [u8; 16] = [0xf1, 0x19, 0x98, 0x18, 0xb6, 0x1d, 0x57, 0x4b, 0xbe, 0x54, 0x18, 0x21, 0x33, 0x9b, 0x85, 0xf7];
+                        let dev_of = |o: *mut c_void| {
+                            let gd: unsafe extern "system" fn(*mut c_void, *const u8, *mut usize) -> i32 = std::mem::transmute(method(o, 7));
+                            let mut d = 0usize;
+                            let hr = gd(o, IID_DEV.as_ptr(), &mut d);
+                            if hr >= 0 && d != 0 {
+                                let rl: unsafe extern "system" fn(usize) -> u32 = std::mem::transmute(method(d as *mut c_void, 2));
+                                rl(d);
+                            }
+                            (hr as u32, d)
+                        };
+                        let pd = if pso > 0x10000 { dev_of(pso as *mut c_void) } else { (0, 0) };
+                        log_d3d12(&format!("[rpl] SetPipelineState pso={pso:#x} vt={vt:#x} rc={rc} list_type={} inner={inner:p} fb={:#x} dev pso={:x?} list={:x?}", gt(inner), super::pso_fallback_raw(), pd, dev_of(inner)));
+                    }
+                }
                 let f: unsafe extern "system" fn(*mut c_void, *mut c_void) = std::mem::transmute(method(inner, 25));
-                f(inner, q(0) as usize as *mut c_void);
+                ph = pso == unwrap_pso(super::pso_fallback_raw() as *mut c_void) as usize;
+                // shortcut: placeholder work is meaningless; binding it faulted NVIDIA (null+8). Skip until shaders translate.
+                if !ph { f(inner, pso as *mut c_void); }
                 STATS[2].fetch_add(1, Ordering::Relaxed);
             }
             _ if h & 0xFF00_FF00 == 0x4000_C600 => {

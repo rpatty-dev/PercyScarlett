@@ -861,7 +861,10 @@ pub(crate) fn data_base() -> std::path::PathBuf {
 }
 
 fn pls_dir() -> Vec<u8> {
-    let d = data_base().join("pls").join("Minecraft");
+    // Per-title folder; Minecraft keeps its original name so existing saves stay put.
+    let stem = std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())).unwrap_or_default();
+    let title = if stem.is_empty() || stem.to_ascii_lowercase().contains("minecraft") { "Minecraft".to_string() } else { stem };
+    let d = data_base().join("pls").join(title);
     let _ = std::fs::create_dir_all(&d);
     let mut s = d.to_string_lossy().into_owned().into_bytes();
     s.push(b'\\');

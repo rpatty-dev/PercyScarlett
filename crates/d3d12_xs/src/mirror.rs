@@ -13,7 +13,7 @@ use std::sync::Mutex;
 extern "system" {
     fn VirtualProtect(addr: *mut c_void, size: usize, prot: u32, old: *mut u32) -> i32;
     fn VirtualQuery(addr: *const c_void, info: *mut [usize; 6], len: usize) -> usize;
-    fn AddVectoredExceptionHandler(first: u32, h: unsafe extern "system" fn(*const c_void) -> i32) -> *mut c_void;
+    pub(crate) fn AddVectoredExceptionHandler(first: u32, h: unsafe extern "system" fn(*const c_void) -> i32) -> *mut c_void;
 }
 
 const PAGE: usize = 64 << 10;
@@ -108,11 +108,18 @@ unsafe extern "system" fn veh(info: *const c_void) -> i32 {
     // EXCEPTION_RECORD: NumberParameters @24, ExceptionInformation @32
     let kind = *er.add(4);
     let addr = *er.add(5);
+    let (st, o, r) = super::console_list::GFX_RS_STEP.with(|c| c.get());
+    if st != 0 {
+        let rip = *(er as *const usize).add(2);
+        super::log_d3d12(&format!("[gfxrs] AV in step {st} obj={o:#x} rs={r:#x} rip={rip:#x} addr={addr:#x}"));
+    }
     if kind != 1 {
         return 0;
     }
     let mut m = MIRRORS.lock().unwrap();
-    let Some(e) = m.iter_mut().find(|e| e.cpu != 0 && addr >= e.cpu && addr < e.cpu + e.size) else { return 0 };
+    let Some(e) = m.iter_mut().find(|e| e.cpu != 0 && addr >= e.cpu && addr < e.cpu + e.size) else {
+        return 0;
+    };
     let p = (addr - e.cpu) / PAGE;
     let mut old = 0;
     let len = PAGE.min(e.size - p * PAGE);

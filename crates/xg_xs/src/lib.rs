@@ -223,3 +223,62 @@ mod tests {
         }
     }
 }
+
+// ---- XGCreateTextureComputer (generic resource-desc variant) ----
+// Same object as the 2D computer, with a 32-slot vtable: methods 3..31 log once and return S_OK,
+// leaving title-initialised outputs untouched (host textures are linear).
+macro_rules! xgslot {
+    ($name:ident, $n:literal) => {
+        unsafe extern "system" fn $name(_t: usize, a: usize, b: usize, c: usize) -> i32 {
+            static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !ONCE.swap(true, Ordering::Relaxed) {
+                eprintln!("[xg] computer slot {} ({a:#x}, {b:#x}, {c:#x}) -> S_OK", $n);
+            }
+            0
+        }
+    };
+}
+xgslot!(g3, 3); xgslot!(g4, 4); xgslot!(g5, 5); xgslot!(g6, 6); xgslot!(g7, 7); xgslot!(g8, 8); xgslot!(g9, 9);
+xgslot!(g10, 10); xgslot!(g11, 11); xgslot!(g12, 12); xgslot!(g13, 13); xgslot!(g14, 14); xgslot!(g15, 15);
+xgslot!(g16, 16); xgslot!(g17, 17); xgslot!(g18, 18); xgslot!(g19, 19); xgslot!(g20, 20); xgslot!(g21, 21);
+xgslot!(g22, 22); xgslot!(g23, 23); xgslot!(g24, 24); xgslot!(g25, 25); xgslot!(g26, 26); xgslot!(g27, 27);
+xgslot!(g28, 28); xgslot!(g29, 29); xgslot!(g30, 30); xgslot!(g31, 31);
+
+
+
+fn xg_vtbl32() -> *const XgComputerVtbl {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        let slots: [unsafe extern "system" fn(usize, usize, usize, usize) -> i32; 29] = [
+            g3, g4, g5, g6, g7, g8, g9, g10, g11, g12, g13, g14, g15, g16, g17, g18, g19, g20, g21, g22, g23, g24, g25, g26, g27, g28, g29, g30, g31,
+        ];
+        let mut v = Box::new([0usize; 32]);
+        for (i, f) in slots.iter().enumerate() {
+            v[3 + i] = *f as usize;
+        }
+        v[0] = xg_qi as usize;
+        v[1] = xg_add_ref as usize;
+        // Not IUnknown on console: +0x10 is GetResourceLayout, so slot 2 must not free the object.
+        v[2] = g3 as usize;
+        Box::leak(v).as_ptr() as usize
+    }) as *const XgComputerVtbl
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XGCreateTextureComputer(_desc: *const c_void, out_computer: *mut *mut c_void) -> i32 {
+    if out_computer.is_null() {
+        return E_POINTER;
+    }
+    let c = Box::new(XgComputer { vtbl: xg_vtbl32(), refs: AtomicU32::new(1) });
+    *out_computer = Box::into_raw(c) as *mut c_void;
+    S_OK
+}
+
+/// Host textures are linear: suggest swizzle mode 0.
+#[no_mangle]
+pub unsafe extern "system" fn XGSuggestSwizzleMode(_desc: usize, _flags: usize, out_mode: *mut u32) -> i32 {
+    if !out_mode.is_null() {
+        *out_mode = 0x102; // valid Scarlett swizzle enum
+    }
+    0
+}

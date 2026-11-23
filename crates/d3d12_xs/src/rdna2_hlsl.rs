@@ -135,6 +135,7 @@ fn read_u32(bytes: &[u8], off: usize) -> Option<u32> {
 pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
     let mut ops = Vec::with_capacity(bytes.len() / 4);
     let mut off = 0usize;
+    let mut furthest_branch = 0usize; // code past s_endpgm is reachable only through a branch
     while off + 4 <= bytes.len() {
         let w0 = read_u32(bytes, off).unwrap();
         if w0 == 0xEFCD_AB89 || w0 == 0x89AB_CDEF {
@@ -1066,6 +1067,12 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
             branch_cond,
         });
         off += len_words * 4;
+        if let Some(t) = branch_target {
+            furthest_branch = furthest_branch.max(t);
+        }
+        if is_endpgm && furthest_branch < off {
+            break; // nothing branches past this end: the rest is data / padding
+        }
         if is_endpgm {
             // Stop at s_code_end or trailing padding, but keep decoding if non-padding code follows an early-return s_endpgm
             let tail = &bytes[off..];

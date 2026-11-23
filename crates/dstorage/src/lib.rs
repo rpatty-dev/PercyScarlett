@@ -22,9 +22,31 @@ struct FactoryVtbl {
     release: unsafe extern "system" fn(*mut c_void) -> u32,
     create_queue: unsafe extern "system" fn(*mut c_void, *const c_void, *const c_void, *mut *mut c_void) -> i32,
     open_file: unsafe extern "system" fn(*mut c_void, *const u16, *const c_void, *mut *mut c_void) -> i32,
-    create_status_array: unsafe extern "system" fn(*mut c_void, u32, *const c_void, *mut *mut c_void) -> i32,
+    create_status_array: unsafe extern "system" fn(*mut c_void, u32, *const u8, *const c_void, *mut *mut c_void) -> i32,
+    // Console IDStorageFactoryX: slot 8 = SetStagingBufferSize (title call site).
+    slot6: unsafe extern "system" fn(*mut c_void, usize, usize) -> i32,
+    slot7: unsafe extern "system" fn(*mut c_void, usize, usize) -> i32,
     set_staging_buffer_size: unsafe extern "system" fn(*mut c_void, u32) -> i32,
+    slot9: unsafe extern "system" fn(*mut c_void, usize, usize) -> i32,
+    create_queue_x: unsafe extern "system" fn(*mut c_void, usize, usize, usize) -> i32,
+    extra: [unsafe extern "system" fn(*mut c_void, usize, usize) -> i32; 6],
 }
+
+macro_rules! fslot {
+    ($name:ident, $n:expr) => {
+        unsafe extern "system" fn $name(_this: *mut c_void, a: usize, b: usize) -> i32 {
+            eprintln!("[dstorage] factory slot {} (0x{:x}, 0x{:x}) -> S_OK", $n, a, b);
+            0
+        }
+    };
+}
+fslot!(fs6, 6); fslot!(fs7, 7); fslot!(fs9, 9);
+/// Console slot 10: CreateQueue(desc, riid, out) (title call site; PC slot 3 equivalent).
+unsafe extern "system" fn fs10(this: *mut c_void, desc: usize, riid: usize, out: usize) -> i32 {
+    eprintln!("[dstorage] factory slot 10 CreateQueue");
+    factory_create_queue(this, desc as *const c_void, riid as *const c_void, out as *mut *mut c_void)
+} fslot!(fs11, 11); fslot!(fs12, 12);
+fslot!(fs13, 13); fslot!(fs14, 14); fslot!(fs15, 15); fslot!(fs16, 16);
 
 #[repr(C)]
 struct FileVtbl {
@@ -113,7 +135,7 @@ unsafe extern "system" fn factory_create_queue(
         return E_POINTER;
     }
     let q = Box::new(ComQueue {
-        vtbl: &QUEUE_VTBL,
+        vtbl: queue_vtbl_logged(),
         refs: AtomicU32::new(1),
         pending_events: Mutex::new(Vec::new()),
     });
@@ -159,6 +181,7 @@ unsafe extern "system" fn factory_open_file(
     }
     let s = String::from_utf16_lossy(std::slice::from_raw_parts(path_w, len));
     let p = resolve_vfs_path(&s);
+    eprintln!("[dstorage] OpenFile {s} -> {}", p.display());
     let Ok(meta) = std::fs::metadata(&p) else {
         *out_file = std::ptr::null_mut();
         return E_FAIL;
@@ -172,12 +195,56 @@ unsafe extern "system" fn factory_open_file(
     *out_file = Box::into_raw(f) as *mut c_void;
     S_OK
 }
-unsafe extern "system" fn factory_create_status(_this: *mut c_void, _cap: u32, _riid: *const c_void, out: *mut *mut c_void) -> i32 {
-    if !out.is_null() {
-        *out = std::ptr::null_mut();
+/// CreateStatusArray(capacity, name, riid, out). Requests complete synchronously at Submit, so
+/// every entry reads complete with S_OK.
+unsafe extern "system" fn factory_create_status(_this: *mut c_void, cap: u32, _name: *const u8, _riid: *const c_void, out: *mut *mut c_void) -> i32 {
+    if out.is_null() {
+        return E_POINTER;
     }
-    E_NOINTERFACE
+    let o = Box::new(StatusArray { vtbl: &STATUS_VTBL, refs: AtomicU32::new(1) });
+    *out = Box::into_raw(o) as *mut c_void;
+    eprintln!("[dstorage] CreateStatusArray cap={cap}");
+    S_OK
 }
+
+#[repr(C)]
+struct StatusArray {
+    vtbl: *const StatusVtbl,
+    refs: AtomicU32,
+}
+#[repr(C)]
+struct StatusVtbl {
+    qi: unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> i32,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
+    release: unsafe extern "system" fn(*mut c_void) -> u32,
+    is_complete: unsafe extern "system" fn(*mut c_void, u32) -> u8,
+    get_hresult: unsafe extern "system" fn(*mut c_void, u32) -> i32,
+}
+unsafe extern "system" fn st_qi(this: *mut c_void, _riid: *const c_void, out: *mut *mut c_void) -> i32 {
+    if out.is_null() {
+        return E_POINTER;
+    }
+    st_add_ref(this);
+    *out = this;
+    S_OK
+}
+unsafe extern "system" fn st_add_ref(this: *mut c_void) -> u32 {
+    (*(this as *const StatusArray)).refs.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1
+}
+unsafe extern "system" fn st_release(this: *mut c_void) -> u32 {
+    let n = (*(this as *const StatusArray)).refs.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) - 1;
+    if n == 0 {
+        drop(Box::from_raw(this as *mut StatusArray));
+    }
+    n
+}
+unsafe extern "system" fn st_is_complete(_this: *mut c_void, _i: u32) -> u8 {
+    1
+}
+unsafe extern "system" fn st_get_hresult(_this: *mut c_void, _i: u32) -> i32 {
+    S_OK
+}
+static STATUS_VTBL: StatusVtbl = StatusVtbl { qi: st_qi, add_ref: st_add_ref, release: st_release, is_complete: st_is_complete, get_hresult: st_get_hresult };
 unsafe extern "system" fn factory_set_staging(_this: *mut c_void, _sz: u32) -> i32 {
     S_OK
 }
@@ -232,22 +299,56 @@ unsafe extern "system" fn queue_release(this: *mut c_void) -> u32 {
     prev - 1
 }
 unsafe extern "system" fn queue_enqueue_req(_this: *mut c_void, req: *const DStorageRequest) {
+    static RN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = RN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if n < 12 && !req.is_null() {
+        let w = std::slice::from_raw_parts(req as *const u64, 10);
+        eprintln!("[dstorage] EnqueueRequest #{n} {:x?}", w);
+    }
     if req.is_null() {
         return;
     }
-    let r = &*req;
-    if r.dest_ptr.is_null() || r.source_size == 0 || r.dest_size < r.source_size {
+    // Console request (u64 words): [0] options (low byte: 0 none, 1 zlib), [1] dest buffer,
+    // [3] dest size, [4] source (IDStorageFile or memory), [5] source offset, [6] source size.
+    let w = std::slice::from_raw_parts(req as *const u64, 10);
+    let (opt, dst, dsz, src, off, ssz) = (w[0], w[1] as *mut u8, w[3] as u32 as usize, w[4] as *const u8, w[5], w[6] as u32 as usize);
+    if dst.is_null() || dsz == 0 || src.is_null() || ssz == 0 {
         return;
     }
-    // Bit 0 of options = 0 (memory source) vs 1 (file source)
-    if (r.options & 1) == 0 && !r.source_ptr.is_null() {
-        std::ptr::copy_nonoverlapping(r.source_ptr, r.dest_ptr, r.source_size as usize);
-    } else if (r.options & 1) == 1 && !r.source_ptr.is_null() {
-        let cf = &*(r.source_ptr as *const ComFile);
-        if let Ok(mut file) = File::open(&cf.path) {
-            if file.seek(SeekFrom::Start(r.source_offset)).is_ok() {
-                let dst = std::slice::from_raw_parts_mut(r.dest_ptr, r.source_size as usize);
-                let _ = file.read_exact(dst);
+    let is_file = *(src as *const *const FileVtbl) == &FILE_VTBL as *const FileVtbl;
+    let data: Vec<u8> = if is_file {
+        let cf = &*(src as *const ComFile);
+        let mut buf = vec![0u8; ssz];
+        let ok = File::open(&cf.path).map(|mut f| f.seek(SeekFrom::Start(off)).is_ok() && f.read_exact(&mut buf).is_ok()).unwrap_or(false);
+        match ok {
+            true => buf,
+            false => {
+                eprintln!("[dstorage] read failed {} off={off:#x} size={ssz:#x}", cf.path.display());
+                return;
+            }
+        }
+    } else {
+        std::slice::from_raw_parts(src.add(off as usize), ssz).to_vec()
+    };
+    let out = std::slice::from_raw_parts_mut(dst, dsz);
+    match opt & 0xff {
+        0 => {
+            let n = data.len().min(dsz);
+            out[..n].copy_from_slice(&data[..n]);
+        }
+        1 => {
+            let mut z = flate2::Decompress::new(true);
+            if z.decompress(&data, out, flate2::FlushDecompress::Finish).is_err() {
+                let mut r = flate2::Decompress::new(false);
+                if r.decompress(&data, out, flate2::FlushDecompress::Finish).is_err() {
+                    eprintln!("[dstorage] inflate failed off={off:#x} size={ssz:#x}");
+                }
+            }
+        }
+        c => {
+            static UC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if UC.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4 {
+                eprintln!("[dstorage] unsupported compression {c} (opt={opt:#x}) size={ssz:#x}->{dsz:#x}");
             }
         }
     }
@@ -287,7 +388,12 @@ static FACTORY_VTBL: FactoryVtbl = FactoryVtbl {
     create_queue: factory_create_queue,
     open_file: factory_open_file,
     create_status_array: factory_create_status,
+    slot6: fs6,
+    slot7: fs7,
     set_staging_buffer_size: factory_set_staging,
+    slot9: fs9,
+    create_queue_x: fs10,
+    extra: [fs11, fs12, fs13, fs14, fs15, fs16],
 };
 
 static FILE_VTBL: FileVtbl = FileVtbl {
@@ -297,6 +403,56 @@ static FILE_VTBL: FileVtbl = FileVtbl {
     close: file_close,
     get_file_information: file_get_info,
 };
+
+// Logged queue vtable: slots 0..10 pass through to QUEUE_VTBL (first call logged), 11..31 log.
+macro_rules! qwrap {
+    ($name:ident, $n:literal) => {
+        unsafe extern "system" fn $name(t: usize, a: usize, b: usize, c: usize) -> usize {
+            static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("[dstorage] queue slot {} ({a:#x}, {b:#x}, {c:#x})", $n);
+            }
+            let real = *((&QUEUE_VTBL as *const QueueVtbl as *const usize).add($n));
+            if real == 0 {
+                return 0;
+            }
+            std::mem::transmute::<usize, unsafe extern "system" fn(usize, usize, usize, usize) -> usize>(real)(t, a, b, c)
+        }
+    };
+}
+qwrap!(q3, 3); qwrap!(q4, 4); qwrap!(q5, 5); qwrap!(q6, 6); qwrap!(q7, 7); qwrap!(q8, 8); qwrap!(q9, 9); qwrap!(q10, 10);
+macro_rules! qstub {
+    ($name:ident, $n:literal) => {
+        unsafe extern "system" fn $name(_t: usize, a: usize, b: usize, c: usize) -> usize {
+            static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("[dstorage] queue slot {} UNIMPL ({a:#x}, {b:#x}, {c:#x})", $n);
+            }
+            0
+        }
+    };
+}
+qstub!(q11, 11); qstub!(q12, 12); qstub!(q13, 13); qstub!(q14, 14); qstub!(q15, 15); qstub!(q16, 16); qstub!(q17, 17);
+qstub!(q18, 18); qstub!(q19, 19); qstub!(q20, 20); qstub!(q21, 21); qstub!(q22, 22); qstub!(q23, 23); qstub!(q24, 24);
+qstub!(q25, 25); qstub!(q26, 26); qstub!(q27, 27); qstub!(q28, 28); qstub!(q29, 29); qstub!(q30, 30); qstub!(q31, 31);
+
+fn queue_vtbl_logged() -> *const QueueVtbl {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        let base = &QUEUE_VTBL as *const QueueVtbl as *const usize;
+        let w: [unsafe extern "system" fn(usize, usize, usize, usize) -> usize; 29] = [
+            q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15, q16, q17, q18, q19, q20, q21, q22, q23, q24, q25, q26, q27, q28, q29, q30, q31,
+        ];
+        let mut v = Box::new([0usize; 32]);
+        for i in 0..3 {
+            v[i] = unsafe { *base.add(i) };
+        }
+        for (i, f) in w.iter().enumerate() {
+            v[3 + i] = *f as usize;
+        }
+        Box::leak(v).as_ptr() as usize
+    }) as *const QueueVtbl
+}
 
 static QUEUE_VTBL: QueueVtbl = QueueVtbl {
     query_interface: queue_qi,

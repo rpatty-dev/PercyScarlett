@@ -89,6 +89,24 @@ pub struct XMemWorkingSetStats {
 extern "system" {
     fn VirtualAlloc(addr: *mut c_void, size: usize, alloc_type: u32, protect: u32) -> *mut c_void;
     fn VirtualFree(addr: *mut c_void, size: usize, free_type: u32) -> i32;
+    fn GetModuleHandleA(name: *const u8) -> usize;
+    fn GetProcAddress(m: usize, name: *const u8) -> usize;
+}
+
+/// VirtualAlloc2 (placeholder support); not in MinGW import libs, resolved from KernelBase.
+#[cfg(windows)]
+unsafe fn VirtualAlloc2(process: usize, addr: *mut c_void, size: usize, alloc_type: u32, protect: u32, params: *mut c_void, n: u32) -> *mut c_void {
+    type F = unsafe extern "system" fn(usize, *mut c_void, usize, u32, u32, *mut c_void, u32) -> *mut c_void;
+    static P: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let p = *P.get_or_init(|| GetProcAddress(GetModuleHandleA(b"kernelbase.dll\0".as_ptr()), b"VirtualAlloc2\0".as_ptr()));
+    if p == 0 {
+        return VirtualAlloc(addr, size, alloc_type & 0x3000, protect);
+    }
+    std::mem::transmute::<usize, F>(p)(process, addr, size, alloc_type, protect, params, n)
+}
+
+#[cfg(windows)]
+extern "system" {
     fn VirtualQueryEx(proc_handle: usize, addr: *const c_void, buf: *mut u8, len: usize) -> usize;
     fn GetCurrentProcess() -> usize;
     fn AddVectoredExceptionHandler(
@@ -207,6 +225,140 @@ pub unsafe extern "system" fn XMemAllocPhysical(size: usize, attributes: u64) ->
 #[no_mangle]
 pub unsafe extern "system" fn XMemFreePhysical(ptr: *mut c_void, attributes: u64) {
     XMemFree(ptr, attributes)
+}
+
+// ---- Physical-page model (Scarlett AWE-style). Signatures from title call sites:
+// XMemVirtualAlloc(addr, size, type, protect, extra) -> ptr
+// XMemAllocatePhysicalPages(attrs, &count, pages) -> BOOL
+// XMemMapPhysicalPages(va, count, pages|NULL) -> ptr
+// XMemMapPhysicalPagesScatter(vas, count, pages|NULL) -> BOOL
+// XMemFreePhysicalPages(count, pages) -> BOOL
+// Host has no physical aliasing: mapping commits fresh RW memory in the reservation.
+const MEM_PHYSICAL: u32 = 0x0040_0000;
+const MEM_LARGE_PAGES: u32 = 0x2000_0000;
+const MEM_4MB_PAGES: u32 = 0x8000_0000;
+
+static RESERVATIONS: std::sync::Mutex<Vec<(usize, usize, usize)>> = std::sync::Mutex::new(Vec::new());
+static NEXT_PFN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x1000);
+
+fn trace(msg: &str) {
+    eprintln!("[xmem] {msg}");
+    log_call(msg);
+}
+
+// Placeholder reservations are kept as ONE committed host allocation so a GPU heap
+// (OpenExistingHeapFromAddress) can span the pieces the title later splits out of it.
+static FAKE_PH: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
+
+fn in_fake_ph(va: usize) -> bool {
+    FAKE_PH.lock().unwrap().iter().any(|r| va >= r.0 && va < r.0 + r.1)
+}
+
+/// Loader asks this before forwarding VirtualFree: TRUE = range is a fake placeholder, swallow the call.
+#[no_mangle]
+pub extern "system" fn PercyXMemOwnsPlaceholder(va: usize) -> i32 {
+    in_fake_ph(va) as i32
+}
+
+fn page_size_at(va: usize) -> usize {
+    // Innermost (latest) reservation wins: placeholder splits nest inside the outer reserve.
+    RESERVATIONS.lock().unwrap().iter().rev().find(|r| va >= r.0 && va < r.0 + r.1).map(|r| r.2).unwrap_or(0x10000)
+}
+
+// Scarlett protect high bits carry cache/GPU attributes; host data pages are RW.
+fn host_protect(_p: u32) -> u32 {
+    0x04
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XMemVirtualAlloc(addr: *mut c_void, size: usize, alloc_type: u32, protect: u32, extra: u64) -> *mut c_void {
+    let page = if alloc_type & MEM_4MB_PAGES != 0 { 0x40_0000 } else if alloc_type & MEM_LARGE_PAGES != 0 { 0x10000 } else { 0x1000 };
+    let physical = alloc_type & MEM_PHYSICAL != 0;
+    // Host-valid bits: COMMIT|RESERVE, REPLACE_PLACEHOLDER (0x4000), RESERVE_PLACEHOLDER (0x40000), TOP_DOWN.
+    let mut t = alloc_type & (0x3000 | 0x4000 | 0x40000 | 0x100000);
+    if t & 0x3000 == 0 { t |= 0x2000; }
+    let _ = physical; // commit requested -> commit even for physical regions
+    if t & 0x40000 != 0 {
+        // RESERVE_PLACEHOLDER -> one committed RW allocation.
+        #[cfg(windows)]
+        let p = VirtualAlloc(addr, size, 0x3000, 0x04);
+        #[cfg(not(windows))]
+        let p: *mut c_void = std::ptr::null_mut();
+        if !p.is_null() {
+            FAKE_PH.lock().unwrap().push((p as usize, size));
+            RESERVATIONS.lock().unwrap().push((p as usize, size, page));
+        }
+        trace(&format!("XMemVirtualAlloc(0x{:x}, 0x{size:x}, 0x{alloc_type:x}) placeholder -> committed 0x{:x}", addr as usize, p as usize));
+        return p;
+    }
+    if t & 0x4000 != 0 && in_fake_ph(addr as usize) {
+        // REPLACE_PLACEHOLDER inside a fake placeholder: memory already committed.
+        RESERVATIONS.lock().unwrap().push((addr as usize, size, page));
+        return addr;
+    }
+    #[cfg(windows)]
+    let ptr = VirtualAlloc2(0, addr, size, t, if t & 0x1000 == 0 { 0x01 } else { host_protect(protect) }, std::ptr::null_mut(), 0);
+    #[cfg(not(windows))]
+    let ptr: *mut c_void = std::ptr::null_mut();
+    if !ptr.is_null() && t & 0x2000 != 0 {
+        RESERVATIONS.lock().unwrap().push((ptr as usize, size, page));
+    }
+    trace(&format!("XMemVirtualAlloc(0x{:x}, 0x{size:x}, 0x{alloc_type:x}, 0x{protect:x}, 0x{extra:x}) -> 0x{:x}", addr as usize, ptr as usize));
+    ptr
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XMemAllocatePhysicalPages(attrs: u64, count: *mut usize, pages: *mut u64) -> i32 {
+    if count.is_null() || pages.is_null() { return 0; }
+    let n = *count;
+    let base = NEXT_PFN.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+    for i in 0..n { *pages.add(i) = base + i as u64; }
+    trace(&format!("XMemAllocatePhysicalPages(attr=0x{attrs:x}, n=0x{n:x}) -> pfn 0x{base:x}"));
+    1
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XMemFreePhysicalPages(count: usize, _pages: *mut u64) -> i32 {
+    trace(&format!("XMemFreePhysicalPages(n=0x{count:x})"));
+    1
+}
+
+#[cfg(windows)]
+unsafe fn map_range(va: usize, len: usize, map: bool) -> bool {
+    if in_fake_ph(va) {
+        return true; // always committed; unmap keeps pages (no physical aliasing on host)
+    }
+    if map { !VirtualAlloc(va as *mut c_void, len, 0x1000, 0x04).is_null() } else { VirtualFree(va as *mut c_void, len, 0x4000) != 0 }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XMemMapPhysicalPages(va: *mut c_void, count: usize, pages: *mut u64) -> *mut c_void {
+    let len = count * page_size_at(va as usize);
+    #[cfg(windows)]
+    let ok = map_range(va as usize, len, !pages.is_null());
+    #[cfg(not(windows))]
+    let ok = false;
+    trace(&format!("XMemMapPhysicalPages(0x{:x}, n=0x{count:x}, map={}) -> {ok}", va as usize, !pages.is_null()));
+    if ok { va } else { std::ptr::null_mut() }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn XMemMapPhysicalPagesScatter(vas: *mut usize, count: usize, pages: *mut u64) -> i32 {
+    if vas.is_null() { return 0; }
+    let mut ok = true;
+    for i in 0..count {
+        let va = *vas.add(i);
+        #[cfg(windows)]
+        { ok &= map_range(va, page_size_at(va), !pages.is_null()); }
+    }
+    trace(&format!("XMemMapPhysicalPagesScatter(n=0x{count:x}, map={}) -> {ok}", !pages.is_null()));
+    ok as i32
+}
+
+/// Profile builds assert this is TRUE at startup.
+#[no_mangle]
+pub unsafe extern "system" fn XMemIsToolsMemAvailable() -> i32 {
+    1
 }
 
 /// Title/system memory budget transfer. Host memory is not partitioned, so this is a no-op success.

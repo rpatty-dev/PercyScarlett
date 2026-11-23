@@ -18,17 +18,21 @@ const IID_SWAP3: [u8; 16] = [0xdb, 0x9b, 0xd9, 0x94, 0xf8, 0xf1, 0xb0, 0x4a, 0xb
 const IID_DEVICE: [u8; 16] = [0xf1, 0x19, 0x98, 0x18, 0xb6, 0x1d, 0x57, 0x4b, 0xbe, 0x54, 0x18, 0x21, 0x33, 0x9b, 0x85, 0xf7];
 const IID_ALLOC: [u8; 16] = [0xe4, 0xde, 0x02, 0x61, 0x59, 0xaf, 0x09, 0x4b, 0xb9, 0x99, 0xb4, 0x4d, 0x73, 0xf0, 0x9b, 0x24];
 const IID_GFXLIST: [u8; 16] = [0x0f, 0x0d, 0x16, 0x5b, 0x1b, 0xac, 0x85, 0x41, 0x8b, 0xa8, 0xb3, 0xae, 0x42, 0xa5, 0xa4, 0x55];
+const IID_QUEUE: [u8; 16] = [0xa6, 0x70, 0xc8, 0x0e, 0x7e, 0x5d, 0x22, 0x4c, 0x8c, 0xfc, 0x5b, 0xaa, 0xe0, 0x76, 0x16, 0xed]; // 0ec870a6-5d7e-4c22-8cfc-5baae07616ed;
 const IID_FENCE: [u8; 16] = [0xcf, 0x3d, 0x75, 0x0a, 0xd8, 0xc4, 0x91, 0x4b, 0xad, 0xf6, 0xbe, 0x5a, 0x60, 0xd9, 0x5a, 0x76];
 
 const RING: usize = 3;
 
 struct Presenter {
     queue: usize,
+    title_queue: usize,
     swap: usize, // IDXGISwapChain3
     buffers: Vec<usize>,
     allocs: [usize; RING],
     list: usize,
     fence: usize,
+    /// title queue -> our queue ordering; separate from ence (two queues signalling one fence can move it backwards)
+    tfence: usize,
     event: usize,
     fence_val: u64,
     slot_fence: [u64; RING],
@@ -114,6 +118,22 @@ unsafe fn create(queue: *mut c_void, src: *mut c_void) -> Result<Presenter, Stri
     // DXGI_SWAP_CHAIN_DESC1: W, H, Format, Stereo, Sample{1,0}, Usage=RT_OUTPUT, Count, Scaling=STRETCH,
     // SwapEffect=FLIP_DISCARD, Alpha=UNSPECIFIED, Flags.
     let desc: [u32; 12] = [w, h, fmt, 0, 1, 0, 0x20, 2, 0, 4, 0, 0];
+    // Present from our own DIRECT queue: the title's present queue may not be one DXGI accepts.
+    let gdev: unsafe extern "system" fn(*mut c_void, *const u8, *mut *mut c_void) -> i32 = m(queue, 7);
+    let mut dev = std::ptr::null_mut();
+    gdev(queue, IID_DEVICE.as_ptr(), &mut dev);
+    if dev.is_null() {
+        return Err("queue GetDevice".into());
+    }
+    let cq: unsafe extern "system" fn(*mut c_void, *const u32, *const u8, *mut *mut c_void) -> i32 = m(dev, 8);
+    let qdesc = [0u32; 4];
+    let mut own = std::ptr::null_mut();
+    let hr = cq(dev, qdesc.as_ptr(), IID_QUEUE.as_ptr(), &mut own);
+    if hr < 0 {
+        return Err(format!("CreateCommandQueue {hr:08x}"));
+    }
+    let title_queue = queue;
+    let queue = own;
     let csc: unsafe extern "system" fn(*mut c_void, *mut c_void, usize, *const u32, *const c_void, *mut c_void, *mut *mut c_void) -> i32 = m(fac, 15);
     let mut sc1 = std::ptr::null_mut();
     let hr = csc(fac, queue, hwnd, desc.as_ptr(), std::ptr::null(), std::ptr::null_mut(), &mut sc1);
@@ -133,13 +153,6 @@ unsafe fn create(queue: *mut c_void, src: *mut c_void) -> Result<Presenter, Stri
         gb(sc, i, IID_RESOURCE.as_ptr(), &mut b);
         buffers.push(b as usize);
     }
-    // Device-side objects on the queue's own device.
-    let gdev: unsafe extern "system" fn(*mut c_void, *const u8, *mut *mut c_void) -> i32 = m(queue, 7);
-    let mut dev = std::ptr::null_mut();
-    gdev(queue, IID_DEVICE.as_ptr(), &mut dev);
-    if dev.is_null() {
-        return Err("queue GetDevice".into());
-    }
     let ca: unsafe extern "system" fn(*mut c_void, u32, *const u8, *mut *mut c_void) -> i32 = m(dev, 9);
     let mut allocs = [0usize; RING];
     for a in allocs.iter_mut() {
@@ -158,14 +171,18 @@ unsafe fn create(queue: *mut c_void, src: *mut c_void) -> Result<Presenter, Stri
     let cfn: unsafe extern "system" fn(*mut c_void, u64, u32, *const u8, *mut *mut c_void) -> i32 = m(dev, 36);
     let mut fence = std::ptr::null_mut();
     cfn(dev, 0, 0, IID_FENCE.as_ptr(), &mut fence);
+        let mut tfence = std::ptr::null_mut();
+        cfn(dev, 0, 0, IID_FENCE.as_ptr(), &mut tfence);
     log_d3d12(&format!("[present] swap chain {w}x{h} fmt={fmt} (src fmt {sfmt}) hwnd={hwnd:#x}"));
     Ok(Presenter {
         queue: queue as usize,
+        title_queue: title_queue as usize,
         swap: sc as usize,
         buffers,
         allocs,
         list: list as usize,
         fence: fence as usize,
+            tfence: tfence as usize,
         event: CreateEventW(std::ptr::null_mut(), 0, 0, std::ptr::null()),
         fence_val: 0,
         slot_fence: [0; RING],
@@ -224,12 +241,22 @@ impl Presenter {
         let close: unsafe extern "system" fn(*mut c_void) -> i32 = m(list, 9);
         let hr = close(list);
         let q = self.queue as *mut c_void;
-        if hr >= 0 {
-            let exec: unsafe extern "system" fn(*mut c_void, u32, *const *mut c_void) = std::mem::transmute(console_list::queue_orig(q, 10));
+        // Order the copy after the title's work: title queue signals, our queue waits.
+        let tq = self.title_queue as *mut c_void;
+        self.fence_val += 1;
+        let tsig: unsafe extern "system" fn(*mut c_void, *mut c_void, u64) -> i32 = std::mem::transmute(console_list::queue_orig(tq, 14));
+        tsig(tq, self.tfence as *mut c_void, self.fence_val);
+        let wait: unsafe extern "system" fn(*mut c_void, *mut c_void, u64) -> i32 = m(q, 15);
+        wait(q, self.tfence as *mut c_void, self.fence_val);
+        // Debug flag percy_no_blit: present without copying the title's image (hang bisect).
+        static NO_BLIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let no_blit = *NO_BLIT.get_or_init(|| super::pso_guard::dir().join("percy_no_blit").exists());
+        if hr >= 0 && !no_blit {
+            let exec: unsafe extern "system" fn(*mut c_void, u32, *const *mut c_void) = m(q, 10);
             exec(q, 1, &list);
         }
         self.fence_val += 1;
-        let signal: unsafe extern "system" fn(*mut c_void, *mut c_void, u64) -> i32 = std::mem::transmute(console_list::queue_orig(q, 14));
+        let signal: unsafe extern "system" fn(*mut c_void, *mut c_void, u64) -> i32 = m(q, 14);
         signal(q, fence, self.fence_val);
         self.slot_fence[slot] = self.fence_val;
         let pres: unsafe extern "system" fn(*mut c_void, u32, u32) -> i32 = m(sc, 8);

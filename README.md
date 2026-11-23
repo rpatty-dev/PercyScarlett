@@ -37,7 +37,7 @@ Clean-room Rust translation layer that runs unencrypted Xbox Series X|S (Scarlet
 | Loader | Maps the title in-process: relocations, `.pdata`, guest static TLS, import routing, user-path virtualization | `src/pe_loader.rs` |
 | Graphics | D3D12.X command lists replayed onto PC D3D12, console present into a DXGI swap chain | `crates/d3d12_xs/src/{replay,console_list,present}.rs` |
 | Shaders | Minecraft ships DXIL, so its shaders run as-is. The RDNA2 → DXIL lifter is experimental: only its strict mode (used by tests) rejects unknown instructions; the runtime path does not yet | `crates/d3d12_xs/src/rdna2_hlsl.rs` |
-| GTA VI | Package staged and registered; main executable not available yet, so nothing has run | `docs/TheBig6.md` |
+| GTA VI | Boots to a running frame loop and first `PresentX` (black frames); stops at a GPU hang (887a0006) about 5 s in, plus an intermittent early device removal. Shader stand-ins, console bottom-of-pipe writes and memory waits are in. Help welcome | `docs/TheBig6.md` |
 
 ---
 
@@ -96,6 +96,7 @@ Rust stable (x86_64-pc-windows-gnu), Windows 10/11 x64, Microsoft GDK for `wdapp
 
 - XCurl offline transfer logic ported from [OpenScarlett](https://github.com/californiaAlmonds/OpenScarlett) (MIT, © 2026 OpenScarlett Contributors).
 - AMD RDNA2 ISA opcode table from AMD's MIT-licensed machine-readable ISA.
+- Console bottom-of-pipe write and memory-wait handling ported from [xcl](https://github.com/ivall/xcl) (GPL-2.0).
 - PercyPRO font under the SIL OFL (`assets/fonts/OFL.txt`).
 
-PercyScarlett is released under the licence in [LICENSE](LICENSE). Not affiliated with Microsoft, Xbox, Mojang or any publisher.
+PercyScarlett is released under the GNU General Public License v2.0 only ([LICENSE](LICENSE)). Not affiliated with Microsoft, Xbox, Mojang or any publisher.

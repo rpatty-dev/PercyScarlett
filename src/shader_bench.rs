@@ -56,6 +56,20 @@ fn load_ps09_raw(path: &Path) -> Result<Vec<u8>, String> {
 }
 
 pub fn run_shader_benchmark(path: &Path, limit: usize, compile_dxil: bool) {
+    run_shader_benchmark_bake(path, limit, compile_dxil, None)
+}
+
+/// FNV-1a 64 of the shader code (after the Scarlett prologue): the cache key shared with
+/// d3d12_xs's runtime lookup.
+pub fn shader_key(code: &[u8]) -> u64 {
+    code.iter().fold(0xcbf29ce484222325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100000001b3))
+}
+
+/// Same as the benchmark; with `bake`, every compiled shader is written to `<bake>/<key>.dxil`.
+pub fn run_shader_benchmark_bake(path: &Path, limit: usize, compile_dxil: bool, bake: Option<&Path>) {
+    if let Some(b) = bake {
+        let _ = std::fs::create_dir_all(b);
+    }
     let t0 = Instant::now();
     let raw = match load_ps09_raw(path) {
         Ok(r) => r,
@@ -146,7 +160,12 @@ pub fn run_shader_benchmark(path: &Path, limit: usize, compile_dxil: bool) {
                             #[cfg(windows)]
                             if all_known && insns > 0 {
                                 match d3d12_xs::compile_hlsl_to_dxil(&hlsl, stage) {
-                                    Ok(_) => { dxil_ok.fetch_add(1, Relaxed); }
+                                    Ok(dxil) => {
+                                        dxil_ok.fetch_add(1, Relaxed);
+                                        if let Some(b) = bake {
+                                            let _ = std::fs::write(b.join(format!("{:016x}.dxil", shader_key(code))), &dxil);
+                                        }
+                                    }
                                     Err(e) => {
                                         dxil_fail.fetch_add(1, Relaxed);
                                         let mut guard = first_err.lock().unwrap();

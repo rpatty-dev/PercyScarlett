@@ -196,7 +196,7 @@ fn file_trace(path: &str, h: usize, flags: u32) {
         if F.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 200 {
             raw_stderr(&format!("[file] FAIL {path}\n"));
         }
-    } else if n % 64 == 0 {
+    } else if n < 300 || n % 64 == 0 {
         raw_stderr(&format!("[file] #{n} {path} flags={flags:#x}\n"));
     }
 }
@@ -244,6 +244,44 @@ unsafe extern "system" fn percy_get_file_attributes_w(name: *const u16) -> u32 {
         }
     }
     GetFileAttributesW(name)
+}
+
+/// WinHttpConnect: refuse the title's crash-report host (Breakpad minidump upload).
+#[cfg(windows)]
+unsafe extern "system" fn percy_winhttp_connect(session: usize, server: *const u16, port: u16, reserved: u32) -> usize {
+    extern "system" {
+        fn LoadLibraryA(n: *const u8) -> usize;
+        fn GetProcAddress(m: usize, n: *const u8) -> usize;
+        fn SetLastError(e: u32);
+    }
+    let mut n = 0usize;
+    while !server.is_null() && n < 256 && *server.add(n) != 0 { n += 1; }
+    let host = if server.is_null() { String::new() } else { String::from_utf16_lossy(std::slice::from_raw_parts(server, n)).to_ascii_lowercase() };
+    if host.contains("backtrace.io") {
+        raw_stderr(&format!("[net] blocked WinHttpConnect {host}\n"));
+        SetLastError(12007); // ERROR_WINHTTP_NAME_NOT_RESOLVED
+        return 0;
+    }
+    let f = GetProcAddress(LoadLibraryA(b"winhttp.dll\0".as_ptr()), b"WinHttpConnect\0".as_ptr());
+    if f == 0 { return 0; }
+    std::mem::transmute::<usize, unsafe extern "system" fn(usize, *const u16, u16, u32) -> usize>(f)(session, server, port, reserved)
+}
+
+/// VirtualFree: xmem keeps console placeholder reservations as one committed allocation;
+/// the title's placeholder split/release calls on those ranges are swallowed.
+#[cfg(windows)]
+unsafe extern "system" fn percy_virtual_free(addr: *mut c_void, size: usize, ty: u32) -> i32 {
+    extern "system" {
+        fn VirtualFree(addr: *mut c_void, size: usize, ty: u32) -> i32;
+        fn GetModuleHandleA(n: *const u8) -> usize;
+        fn GetProcAddress(m: usize, n: *const u8) -> usize;
+    }
+    static OWNS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let f = *OWNS.get_or_init(|| { let m = GetModuleHandleA(b"xmem.dll\0".as_ptr()); if m == 0 { 0 } else { GetProcAddress(m, b"PercyXMemOwnsPlaceholder\0".as_ptr()) } });
+    if f != 0 && std::mem::transmute::<usize, extern "system" fn(usize) -> i32>(f)(addr as usize) != 0 {
+        return 1;
+    }
+    VirtualFree(addr, size, ty)
 }
 
 /// Free-space queries on console drives (`S:\`, `T:\`, `G:\`) are answered for the mapped host
@@ -1303,6 +1341,23 @@ unsafe extern "system" fn trace_veh(info: *const c_void) -> i32 {
             }
             return -1; // EXCEPTION_CONTINUE_EXECUTION
         }
+        // percy_skip_int3 (debug aid): a profile-build assert in the guest image is logged once
+        // per site and stepped over, so one run surfaces many failures.
+        static SKIP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let gb = GUEST_IMAGE_BASE.load(std::sync::atomic::Ordering::Acquire);
+        if *SKIP.get_or_init(|| std::env::current_exe().map(|e| e.with_file_name("percy_skip_int3").exists()).unwrap_or(false))
+            && gb != 0 && rip > gb && rip < gb + 0x1000_0000 && *(rip as *const u8) == 0xCC
+        {
+            static SEEN: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+            let mut s = SEEN.lock().unwrap();
+            if !s.contains(&rip) {
+                s.push(rip);
+                let rsp = *ctx.add(0x98 / 8) as usize;
+                raw_stderr(&format!("[assert] skipped int3 at G+{:x} | {}\n", rip - gb, compact_frames(rsp, 512, 6)));
+            }
+            *ctx.add(0xF8 / 8) = (rip + 1) as u64;
+            return -1;
+        }
     }
     if code == 0xE06D_7363 || code == 0xC000_0005 {
         let ctx = *((info as *const *const u64).add(1));
@@ -1335,7 +1390,8 @@ unsafe extern "system" fn trace_veh(info: *const c_void) -> i32 {
         };
         let rsp = *ctx.add(0x98 / 8) as usize;
         let guest = GUEST_IMAGE_BASE.load(std::sync::atomic::Ordering::Acquire);
-        let frames = compact_frames(rsp, 512, 8);
+        // C++ throws inside D3D12 are deep: scan further to reach the d3d12_xs / guest caller.
+        let frames = if code == 0xE06D_7363 { compact_frames(rsp, 16384, 40) } else { compact_frames(rsp, 512, 8) };
         let (rm, ro) = describe_addr(_rip as usize);
         let _ = guest;
         let extra = if code == 0xE06D_7363 { format!(" hr={q3:08x} {_msg}") } else { format!(" va={:#x} rcx={_rcx:#x} rdx={_rdx:#x} r8={:#x}", obj as usize, *ctx.add(0xB8 / 8)) };
@@ -1474,7 +1530,9 @@ fn resolve_shim_or_host_dll(dll_name: &str, shim_dir: &Path, cache: &mut HashMap
         "xcurl.dll",
     ];
     let mut handle = 0usize;
-    if shim_names.contains(&key.as_str()) {
+    // Console DirectStorage ships as XCRDAPI.dll (-> dstorage); audio DSP chad.dll -> xapu.
+    let dll_name = if key == "xcrdapi.dll" { "dstorage.dll" } else if key == "chad.dll" { "xapu.dll" } else { dll_name };
+    if shim_names.contains(&dll_name.to_ascii_lowercase().as_str()) {
         let p = shim_dir.join(dll_name);
         if let Ok(cs) = CString::new(p.to_string_lossy().as_bytes()) {
             handle = unsafe { LoadLibraryA(cs.as_ptr()) };
@@ -1645,6 +1703,8 @@ pub fn load_and_run_pe64(data: &[u8], shim_dir: &Path, execute_entry: bool) -> R
                                 let name_str = read_cstr_mem(fn_name_ptr as *const u8);
                                 addr = match name_str.as_str() {
                                     "RtlPcToFileHeader" => percy_rtl_pc_to_file_header as *const () as usize,
+                                    "VirtualFree" => percy_virtual_free as *const () as usize,
+                                    "WinHttpConnect" => percy_winhttp_connect as *const () as usize,
                                     "GetModuleFileNameW" => percy_get_module_file_name_w as *const () as usize,
                                     "GetModuleFileNameA" => percy_get_module_file_name_a as *const () as usize,
                                     "GetModuleHandleW" => percy_get_module_handle_w as *const () as usize,

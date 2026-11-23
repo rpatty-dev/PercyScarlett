@@ -139,10 +139,35 @@ pub unsafe extern "system" fn ApuAlloc(va: *mut *mut c_void, pa: *mut u32, size:
         return E_OUTOFMEMORY;
     }
     *va = p;
+    let a = apu_register(p as usize, size as usize);
     if !pa.is_null() {
-        *pa = p as usize as u32;
+        *pa = a;
     }
     S_OK
+}
+
+// APU addresses are 32-bit; host pointers aren't. Keep a table: apu = 0x1000_0000 + running offset.
+static APU_MAP: std::sync::Mutex<Vec<(u32, usize, usize)>> = std::sync::Mutex::new(Vec::new());
+static APU_NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x1000_0000);
+
+fn apu_register(va: usize, size: usize) -> u32 {
+    let sz = ((size.max(1) + 0xFFFF) & !0xFFFF) as u32;
+    let a = APU_NEXT.fetch_add(sz, std::sync::atomic::Ordering::Relaxed);
+    APU_MAP.lock().unwrap().push((a, va, size.max(1)));
+    a
+}
+
+/// `ApuCreateHeap(cachedBytes, nonCachedBytes)`: host allocations are made per ApuAlloc; nothing to reserve.
+#[no_mangle]
+pub unsafe extern "system" fn ApuCreateHeap(cached: u32, non_cached: u32) -> i32 {
+    eprintln!("[apu] ApuCreateHeap cached={cached:#x} noncached={non_cached:#x}");
+    S_OK
+}
+
+/// `ApuMapApuAddress(apu) -> va`.
+#[no_mangle]
+pub unsafe extern "system" fn ApuMapApuAddress(apu: u32) -> *mut c_void {
+    APU_MAP.lock().unwrap().iter().find(|e| apu >= e.0 && ((apu - e.0) as usize) < e.2).map(|e| (e.1 + (apu - e.0) as usize) as *mut c_void).unwrap_or(std::ptr::null_mut())
 }
 
 #[no_mangle]
@@ -162,6 +187,6 @@ pub unsafe extern "system" fn ApuIsVirtualAddressValid(va: *const c_void, _pa: u
 
 #[no_mangle]
 pub unsafe extern "system" fn ApuMapVirtualAddress(va: *const c_void) -> u32 {
-    eprintln!("[apu] ApuMapVirtualAddress va={:?}", va);
-    va as usize as u32
+    let v = va as usize;
+    APU_MAP.lock().unwrap().iter().find(|e| v >= e.1 && v < e.1 + e.2).map(|e| e.0 + (v - e.1) as u32).unwrap_or(v as u32)
 }
