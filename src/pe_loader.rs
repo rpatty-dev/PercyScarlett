@@ -1143,6 +1143,10 @@ fn short_mod(m: &str, off: usize) -> String {
 #[cfg(windows)]
 unsafe fn compact_frames(rsp: usize, slots: usize, max: usize) -> String {
     let mut out: Vec<String> = Vec::new();
+    // Never read past this thread's stack (TEB StackBase, gs:[8]): a fault here kills the process.
+    let base: usize;
+    std::arch::asm!("mov {}, gs:[8]", out(reg) base);
+    let slots = if rsp < base { slots.min((base - rsp) / 8) } else { 0 };
     for i in 0..slots {
         let (m, off) = describe_addr(*((rsp as *const usize).add(i)));
         if m.is_empty() || off == 0 || ["ntdll.dll", "KERNELBASE.dll", "kernel32.dll", "KERNEL32.DLL", "sechost.dll", "kernel.appcore.dll"].iter().any(|s| m.eq_ignore_ascii_case(s)) {

@@ -1192,7 +1192,27 @@ pub(crate) fn xlate_cpu(h: usize) -> usize {
 unsafe extern "system" fn devx_create_cbv(this: *mut c_void, desc: *const c_void, h: usize) {
     let (inner, f) = devx_inner_fn(this, 17);
     let f: unsafe extern "system" fn(*mut c_void, *const c_void, usize) = std::mem::transmute(f);
-    f(inner, desc, xlate_cpu(h))
+    // Console CBVs may be 128-byte sized or point outside any PC buffer; on PC either is an invalid
+    // call that removes the device (887a0001). Round the size to 256 within the buffer, else null.
+    // shortcut: unknown or unaligned addresses get a null CBV (reads 0) until title memory is GPU-visible.
+    let mut d = [0u64; 2];
+    let mut pd = std::ptr::null::<c_void>();
+    if !desc.is_null() {
+        d = *(desc as *const [u64; 2]);
+        let (va, size) = (d[0], d[1] as u32 as u64);
+        let rounded = (size + 255) & !255;
+        match replay::buf_extent(va) {
+            Some(room) if va % 256 == 0 && rounded <= room && rounded != 0 => {
+                d[1] = rounded;
+                pd = d.as_ptr() as *const c_void;
+            }
+            _ => {
+                static N: AtomicU32 = AtomicU32::new(0);
+                if N.fetch_add(1, Ordering::Relaxed) < 8 { log_d3d12(&format!("[d3d12x] CBV va={va:#x} size={size} not in a PC buffer -> null")); }
+            }
+        }
+    }
+    f(inner, pd, xlate_cpu(h))
 }
 unsafe extern "system" fn devx_create_srv(this: *mut c_void, res: *mut c_void, desc: *const c_void, h: usize) {
     let (inner, f) = devx_inner_fn(this, 18);
@@ -1428,8 +1448,9 @@ unsafe extern "system" fn devx_create_placed_resource_x(
             // allocation size: walk the regions sharing this allocation base
             let mut sz = 0usize;
             let mut q: Mbi = std::mem::zeroed();
-            while VirtualQuery(base + sz, &mut q, std::mem::size_of::<Mbi>()) != 0 && q.alloc_base == base && q.size != 0 { sz += q.size; }
-            log_d3d12(&format!("[d3d12x] heap open base={base:#x} size={:#x} ({} MiB) for va={va:#x} -> {:08x}", sz, sz >> 20, hr as u32));
+            let mut com = 0usize;
+            while VirtualQuery(base + sz, &mut q, std::mem::size_of::<Mbi>()) != 0 && q.alloc_base == base && q.size != 0 { if q.state == 0x1000 { com += q.size; } sz += q.size; }
+            log_d3d12(&format!("[d3d12x] heap open base={base:#x} size={:#x} ({} MiB, {} MiB committed) for va={va:#x} -> {:08x}", sz, sz >> 20, com >> 20, hr as u32));
         }
     }
     let is_buffer = !desc.is_null() && *(desc as *const u32) == 1;

@@ -140,6 +140,11 @@ pub(crate) unsafe fn note_buffer(res: *mut c_void, width: u64, kind: u8) {
     }
 }
 
+/// Bytes from `va` to the end of the PC buffer holding it (no bind statistics).
+pub(crate) fn buf_extent(va: u64) -> Option<u64> {
+    let m = BUFS.lock().unwrap();
+    m.range(..=va).next_back().filter(|(_, &(end, _))| end > va).map(|(_, &(end, _))| end - va)
+}
 fn buf_bytes(va: u64) -> u32 {
     let m = BUFS.lock().unwrap();
     match m.range(..=va).next_back() {
