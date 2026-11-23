@@ -337,6 +337,8 @@ pub fn run_self_test(shim_dir: &Path) -> SelfTestResult {
         ("GameInput.dll", "GameInputCreate"),
         ("winrt_xs.dll", "WindowsCreateString"),
         ("xaudio2_9.dll", "XAudio2Create"),
+        ("AcpHal.dll", "AcpHalCreate"),
+        ("xapu.dll", "XApuConnect"),
     ];
     let mut ok_shims = 0usize;
     let mut missing_shims = Vec::new();

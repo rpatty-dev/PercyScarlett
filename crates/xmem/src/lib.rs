@@ -81,11 +81,8 @@ fn log_call(msg: &str) {
 
 #[repr(C)]
 pub struct XMemWorkingSetStats {
-    pub size: u32,
-    pub flags: u32,
-    pub available_bytes: u64,
-    pub total_bytes: u64,
-    pub reserved: [u64; 5],
+    pub budget_bytes: u64,
+    pub used_bytes: u64,
 }
 
 #[cfg(windows)]
@@ -139,16 +136,29 @@ pub unsafe extern "system" fn XMemFree(ptr: *mut c_void, attributes: u64) {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn XMemGetWorkingSetStatistics(stats: *mut XMemWorkingSetStats) -> i32 {
+pub unsafe extern "system" fn XMemGetWorkingSetStatistics(_category: u32, stats: *mut XMemWorkingSetStats) -> i32 {
     if stats.is_null() {
         return 0;
     }
-    (*stats).size = std::mem::size_of::<XMemWorkingSetStats>() as u32;
-    (*stats).flags = 0;
-    (*stats).available_bytes = 4 * 1024 * 1024 * 1024;
-    (*stats).total_bytes = 8 * 1024 * 1024 * 1024;
-    (*stats).reserved = [0; 5];
-    log_call("XMemGetWorkingSetStatistics -> TRUE (4 GiB avail / 8 GiB total)");
+    #[repr(C)]
+    struct Pmc { cb: u32, faults: u32, peak_ws: usize, ws: usize, qpp: usize, qp: usize, qnpp: usize, qnp: usize, pagefile: usize, peak_pf: usize }
+    #[cfg(windows)]
+    extern "system" {
+        fn K32GetProcessMemoryInfo(h: usize, pmc: *mut Pmc, cb: u32) -> i32;
+    }
+    let mut used = 0u64;
+    #[cfg(windows)]
+    {
+        let mut pmc: Pmc = std::mem::zeroed();
+        pmc.cb = std::mem::size_of::<Pmc>() as u32;
+        if K32GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) != 0 {
+            used = pmc.pagefile as u64;
+        }
+    }
+    // Observed title ABI: 16-byte output {budget, used}; Scarlett titles get ~13.5 GiB of game memory.
+    (*stats).budget_bytes = 13824 * 1024 * 1024;
+    (*stats).used_bytes = used;
+    log_call(&format!("XMemGetWorkingSetStatistics -> TRUE (budget 13.5 GiB, used 0x{used:x})"));
     1
 }
 
@@ -199,6 +209,12 @@ pub unsafe extern "system" fn XMemFreePhysical(ptr: *mut c_void, attributes: u64
     XMemFree(ptr, attributes)
 }
 
+/// Title/system memory budget transfer. Host memory is not partitioned, so this is a no-op success.
+#[no_mangle]
+pub unsafe extern "system" fn XMemTransferMemory(_from: u64, _bytes: u64) -> i32 {
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,8 +223,8 @@ mod tests {
     fn xmem_alloc_free_and_stats_work() {
         unsafe {
             let mut stats = std::mem::zeroed::<XMemWorkingSetStats>();
-            assert_eq!(XMemGetWorkingSetStatistics(&mut stats), 1);
-            assert!(stats.available_bytes > 0);
+            assert_eq!(XMemGetWorkingSetStatistics(0x2000_0001, &mut stats), 1);
+            assert!(stats.budget_bytes > 0);
             if cfg!(windows) {
                 let p = XMemAlloc(4096, 0);
                 assert!(!p.is_null());

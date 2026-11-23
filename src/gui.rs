@@ -30,6 +30,9 @@ const REQUIRED_RUNTIME_FILES: &[&str] = &[
     "xg_xs.dll",
     "winrt_xs.dll",
     "xaudio2_9.dll",
+    "AcpHal.dll",
+    "xapu.dll",
+    "XCurl.dll",
     "dxcompiler.dll",
     "dxil.dll",
 ];
@@ -216,6 +219,7 @@ fn spawn_install_runtime_and_shortcut(
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DashTab {
+    Library,
     Home,
     Shims,
     Shaders,
@@ -224,6 +228,10 @@ enum DashTab {
 
 struct DashboardApp {
     tab: DashTab,
+    games: Vec<crate::library::Game>,
+    game_sel: usize,
+    game_state: std::collections::HashMap<PathBuf, crate::library::ExeState>,
+    data_dir_edit: String,
     exe_path: String,
     build_dir: String,
     shaders_rpf: String,
@@ -446,16 +454,20 @@ impl DashboardApp {
         });
 
         Self {
-            tab: DashTab::Home,
+            tab: DashTab::Library,
+            games: crate::library::load(),
+            game_sel: 0,
+            game_state: Default::default(),
+            data_dir_edit: String::new(),
             exe_path: String::from(r"target\release\scarlett_sample.exe"),
-            build_dir: String::from(r"D:\Grand Theft Auto VI Build"),
-            shaders_rpf: String::from(r"D:\Grand Theft Auto VI Build\shaders.rpf"),
+            build_dir: String::new(),
+            shaders_rpf: String::new(),
             wrap_d3d12: true,
             log_d3d12: true,
             log_xmem: false,
             mascot_tex,
             console: Arc::new(Mutex::new(
-                "Dashboard ready. Pick a tile (arrow keys + Enter work too).\n".into(),
+                "Ready. Add a game folder in Library, then Check, Register and Launch.\n".into(),
             )),
             busy: Arc::new(Mutex::new(false)),
             update,
@@ -754,7 +766,8 @@ impl DashboardApp {
 
             let mut active_rect = None;
             for (t, label) in [
-                (DashTab::Home, "Home"),
+                (DashTab::Library, "Library"),
+                (DashTab::Home, "Runtime"),
                 (DashTab::Shims, "Shims"),
                 (DashTab::Shaders, "Shaders"),
                 (DashTab::Settings, "Settings"),
@@ -977,6 +990,159 @@ impl DashboardApp {
     }
 }
 
+impl DashboardApp {
+    /// Library: Scarlett package folders, their readiness, launch and per-game options.
+    fn library(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_busy: bool) {
+        use crate::library::{self, ExeState};
+        const RED: Color32 = Color32::from_rgb(214, 96, 80);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Library").font(semibold(28.0)).color(WHITE));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(primary("Add game folder…")).clicked() {
+                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                        match library::from_path(&p) {
+                            Some(g) if !self.games.contains(&g) => {
+                                self.games.push(g);
+                                self.game_sel = self.games.len() - 1;
+                                self.data_dir_edit.clear();
+                                let _ = library::save(&self.games);
+                            }
+                            Some(_) => {}
+                            None => self.console.lock().unwrap().push_str("No MicrosoftGame.Config with an executable in that folder.\n"),
+                        }
+                    }
+                }
+            });
+        });
+        ui.label(RichText::new("Xbox Series X|S package folders. The exe can be added later.").color(DIM));
+        ui.add_space(12.0);
+        if self.games.is_empty() {
+            card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("No games yet. Add the folder that holds MicrosoftGame.Config.").color(DIM));
+            });
+            return;
+        }
+        self.game_sel = self.game_sel.min(self.games.len() - 1);
+        ui.horizontal(|ui| {
+            for (i, g) in self.games.iter().enumerate() {
+                let active = i == self.game_sel;
+                let b = egui::Button::new(RichText::new(&g.name).size(14.0).color(if active { WHITE } else { DIM }))
+                    .fill(if active { SURFACE_HI } else { SURFACE })
+                    .corner_radius(10.0_f32);
+                if ui.add(b).clicked() {
+                    self.game_sel = i;
+                    self.data_dir_edit.clear();
+                }
+            }
+        });
+        ui.add_space(12.0);
+        let g = self.games[self.game_sel].clone();
+        if self.data_dir_edit.is_empty() {
+            self.data_dir_edit = g.data_dir();
+        }
+        let state = self.game_state.get(&g.exe).cloned();
+        let staged = g.staged();
+        let mut remove = false;
+        card().corner_radius(18.0_f32).inner_margin(24.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(&g.name).font(semibold(24.0)).color(WHITE));
+            ui.label(RichText::new(format!("{} · v{} · {}", g.identity, g.version, g.dir().display())).size(12.5).color(DIM));
+            ui.add_space(12.0);
+            let chip = |ui: &mut egui::Ui, ok: Option<bool>, text: String| {
+                let c = match ok {
+                    Some(true) => GREEN,
+                    Some(false) => RED,
+                    None => DIM,
+                };
+                ui.label(RichText::new("●").size(10.0).color(c));
+                ui.label(RichText::new(text).size(13.5).color(WHITE));
+                ui.add_space(14.0);
+            };
+            ui.horizontal_wrapped(|ui| {
+                let exe = g.exe.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                match &state {
+                    None => chip(ui, None, format!("{exe} · not checked")),
+                    Some(ExeState::Missing) => chip(ui, Some(false), format!("{exe} missing")),
+                    Some(ExeState::NotPe) => chip(ui, Some(false), format!("{exe} is encrypted (needs a decrypted dump of your copy)")),
+                    Some(ExeState::Ready { unresolved }) if unresolved.is_empty() => chip(ui, Some(true), format!("{exe} ready · all imports resolved")),
+                    Some(ExeState::Ready { unresolved }) => chip(ui, Some(false), format!("{} unresolved imports: {}", unresolved.len(), unresolved.join(", "))),
+                }
+                chip(ui, Some(staged), if staged { "Identity registered".into() } else { "Not registered".into() });
+            });
+            ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!is_busy, egui::Button::new("Check")).clicked() {
+                    self.game_state.insert(g.exe.clone(), g.exe_state());
+                }
+                if ui.add_enabled(!is_busy, egui::Button::new(if staged { "Re-register" } else { "Register" })).clicked() {
+                    self.run_cli(ctx, vec!["register".into(), g.exe.display().to_string()]);
+                }
+                let can_launch = staged && g.exe.exists() && !matches!(state, Some(ExeState::NotPe) | Some(ExeState::Missing));
+                if ui.add_enabled(!is_busy && can_launch, primary("Launch")).clicked() {
+                    self.run_cli(ctx, vec!["launch".into(), g.exe.display().to_string()]);
+                }
+                if ui.button("Open folder").clicked() {
+                    let _ = silent_cmd("explorer.exe").arg(g.dir()).spawn();
+                }
+                if ui.add_enabled(g.log().exists(), egui::Button::new("Open log")).clicked() {
+                    let _ = silent_cmd("notepad.exe").arg(g.log()).spawn();
+                }
+                if ui.button("Remove").clicked() {
+                    remove = true;
+                }
+            });
+        });
+        if remove {
+            self.games.remove(self.game_sel);
+            let _ = library::save(&self.games);
+            self.data_dir_edit.clear();
+            return;
+        }
+        ui.add_space(14.0);
+        ui.columns(2, |cols| {
+            card().show(&mut cols[0], |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("Options").font(semibold(15.0)).color(WHITE));
+                if !staged {
+                    ui.label(RichText::new("Register first; options are stored in the identity overlay.").size(12.5).color(DIM));
+                    return;
+                }
+                for (flag, label, _) in library::OPTIONS {
+                    let mut on = g.option(flag);
+                    if ui.checkbox(&mut on, *label).changed() {
+                        let _ = g.set_option(flag, on);
+                    }
+                }
+                ui.add_space(6.0);
+                ui.label(RichText::new("Save data folder").size(12.5).color(DIM));
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.data_dir_edit).desired_width(260.0));
+                    if ui.button("Set").clicked() {
+                        if let Err(e) = g.set_data_dir(&self.data_dir_edit) {
+                            self.console.lock().unwrap().push_str(&format!("Save folder: {e}\n"));
+                        }
+                    }
+                });
+            });
+            card().show(&mut cols[1], |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("Last run").font(semibold(15.0)).color(WHITE));
+                let tail = g.log_tail(12);
+                if tail.is_empty() {
+                    ui.label(RichText::new("No run log yet.").size(12.5).color(DIM));
+                }
+                egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                    for l in tail {
+                        let c = if l.contains("[crash]") { RED } else { DIM };
+                        ui.label(RichText::new(l).monospace().size(11.5).color(c));
+                    }
+                });
+            });
+        });
+    }
+}
+
 impl eframe::App for DashboardApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         if self.splash_started.is_some() {
@@ -1091,6 +1257,7 @@ impl eframe::App for DashboardApp {
                     ui.set_opacity(1.0 - (self.tab_switches - shown).clamp(0.0, 1.0) * 0.9);
 
                     match self.tab {
+                    DashTab::Library => self.library(ui, ctx, is_busy),
                     DashTab::Home => self.home(ui, ctx, is_busy),
                     DashTab::Shims => {
                         ui.label(RichText::new("Shims").font(semibold(28.0)).color(WHITE));

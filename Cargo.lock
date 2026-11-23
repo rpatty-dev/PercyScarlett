@@ -111,6 +111,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "acphal"
+version = "0.1.0"
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2318,7 +2322,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "percyscarlett"
-version = "0.4.0"
+version = "0.9.0"
 dependencies = [
  "d3d12_xs",
  "eframe",
@@ -3934,7 +3938,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 
 [[package]]
+name = "xapu"
+version = "0.1.0"
+
+[[package]]
 name = "xaudio2_9"
+version = "0.1.0"
+
+[[package]]
+name = "xcurl"
 version = "0.1.0"
 
 [[package]]

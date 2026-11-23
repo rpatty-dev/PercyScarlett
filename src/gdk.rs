@@ -21,8 +21,8 @@ pub const SHIM_SPECS: &[ScarlettShimSpec] = &[
     ScarlettShimSpec { dll: "GameInput.dll", area: "Input", role: "GameInputCreate controller/input shim", status: "Live-DLL Verified (crates/gameinput)" },
     ScarlettShimSpec { dll: "winrt_xs.dll", area: "Runtime", role: "WinRT RoInitialize / HSTRING / activation factories", status: "Live-DLL Verified (crates/winrt_xs)" },
     ScarlettShimSpec { dll: "chad.dll", area: "Audio", role: "XDsp* hardware DSP audio processing", status: "Planned (stubgen-ready)" },
-    ScarlettShimSpec { dll: "xapu.dll", area: "Audio", role: "XApu* audio processing unit runtime", status: "Planned (stubgen-ready)" },
-    ScarlettShimSpec { dll: "AcpHal.dll", area: "Audio", role: "Audio Command Processor HAL", status: "Planned (stubgen-ready)" },
+    ScarlettShimSpec { dll: "xapu.dll", area: "Audio", role: "XApu* audio processing unit runtime", status: "Live-DLL Verified (crates/xapu)" },
+    ScarlettShimSpec { dll: "AcpHal.dll", area: "Audio", role: "Audio Command Processor HAL", status: "Live-DLL Verified (crates/acphal)" },
     ScarlettShimSpec { dll: "xcrdapi.dll", area: "Storage", role: "Xbox content / package runtime API", status: "Planned (stubgen-ready)" },
 ];
 

@@ -97,6 +97,7 @@
     }
     a { color: var(--green); text-decoration: none; }
     a:hover { text-decoration: underline; }
+    section:focus, a:focus, button:focus { outline: 2px solid var(--green); outline-offset: 4px; border-radius: 6px; }
     footer { text-align: center; color: var(--muted); font-size: 0.85rem; margin-top: 32px; }
   </style>
 </head>
@@ -266,6 +267,23 @@ DLL verification: 6 passed, 0 failed</pre>
       }
       tick();
       setInterval(tick, 1000);
+    })();
+    // Keyboard navigation: arrows step through sections/links/buttons, Enter opens the focused one.
+    (function () {
+      var items = Array.prototype.slice.call(document.querySelectorAll('section, a[href], button'));
+      items.forEach(function (e) { if (!e.hasAttribute('tabindex') && e.tagName === 'SECTION') e.setAttribute('tabindex', '0'); });
+      document.addEventListener('keydown', function (ev) {
+        var step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[ev.key];
+        if (step) {
+          ev.preventDefault();
+          var i = items.indexOf(document.activeElement);
+          var next = items[Math.min(items.length - 1, Math.max(0, i < 0 ? (step > 0 ? 0 : items.length - 1) : i + step))];
+          next.focus();
+          next.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        } else if (ev.key === 'Enter' && document.activeElement && document.activeElement.tagName === 'BUTTON') {
+          document.activeElement.click();
+        }
+      });
     })();
   </script>
 </body>

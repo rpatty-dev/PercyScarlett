@@ -8,3 +8,6 @@ launch_build.bat
 *.log
 tools/dxc/
 /dist/
+percyscarlett_test_report.md
+percy_crash.log
+bootstrapStorage/

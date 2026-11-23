@@ -80,7 +80,7 @@ fn scarlett_guest_exe_end_to_end_bringup() {
 extern "system" {
     fn XMemAlloc(size: usize, attributes: u64) -> *mut core::ffi::c_void;
     fn XMemFree(ptr: *mut core::ffi::c_void, attributes: u64);
-    fn XMemGetWorkingSetStatistics(stats: *mut [u64; 8]) -> i32;
+    fn XMemGetWorkingSetStatistics(category: u32, stats: *mut [u64; 8]) -> i32;
 }
 
 #[link(name = "d3d12_xs", kind = "dylib")]
@@ -164,8 +164,8 @@ struct RootSigDesc {
 fn main() {
     unsafe {
         let mut stats = [0u64; 8];
-        assert_eq!(XMemGetWorkingSetStatistics(&mut stats), 1);
-        assert!(stats[1] > 0 && stats[2] >= stats[1]);
+        assert_eq!(XMemGetWorkingSetStatistics(0x2000_0001, &mut stats), 1);
+        assert!(stats[0] > 0 && stats[0] >= stats[1]); // {budget, used}
 
         let p = XMemAlloc(64 * 1024, 0x10);
         assert!(!p.is_null());

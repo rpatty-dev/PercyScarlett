@@ -2,6 +2,12 @@
 
 This document records empirical verification from PercyScarlett's PE32+ scanner and runtime probes against an unencrypted **TheBig6 😉** Xbox Series X|S (Scarlett) GDK build, demonstrating why the build can execute natively on Windows x64 once the missing main executable is paired with PercyScarlett's GDK shim DLLs.
 
+## v0.9 status
+
+- Package folder added to the Library with no executable present: config parsed, identity overlay built and registered with the PC Gaming Runtime, placeholder store art generated, save folder set.
+- Every function the shipped sidecar DLLs import from PercyScarlett shims is exported (checked per function, not just per DLL).
+- Remaining step: drop in the unencrypted main executable, then Library → Check → Launch.
+
 ---
 
 ## 1. Proof of Native x86-64 PE32+ Compatibility

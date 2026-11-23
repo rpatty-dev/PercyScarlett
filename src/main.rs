@@ -1,5 +1,6 @@
 mod gdk;
 mod gui;
+mod library;
 mod mascot;
 mod pe64;
 mod pe_loader;
@@ -12,6 +13,28 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
+#[cfg(windows)]
+fn wdapp_path() -> std::path::PathBuf {
+    let gdk = std::env::var("GameDK").unwrap_or_else(|_| r"C:\Program Files (x86)\Microsoft GDK\".into());
+    Path::new(&gdk).join("bin").join("wdapp.exe")
+}
+
+/// Points process stdout/stderr at `log` (used when activated without a console).
+#[cfg(windows)]
+fn redirect_stdio_to(log: &Path) {
+    use std::os::windows::io::IntoRawHandle;
+    extern "system" {
+        fn SetStdHandle(n: u32, h: *mut std::ffi::c_void) -> i32;
+    }
+    if let Ok(f) = fs::File::create(log) {
+        let h = f.into_raw_handle();
+        unsafe {
+            SetStdHandle(-11i32 as u32, h);
+            SetStdHandle(-12i32 as u32, h);
+        }
+    }
+}
+
 // Hint NVIDIA Optimus & AMD Switchable Graphics to select the discrete high-performance GPU.
 #[cfg(windows)]
 #[no_mangle]
@@ -21,7 +44,53 @@ pub static NvOptimusEnablement: u32 = 1;
 pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+    static MAIN_ENTRIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let entry_no = MAIN_ENTRIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if std::env::var("PERCY_OVERLAY").is_ok() || entry_no > 0 {
+        #[cfg(windows)]
+        pe_loader::log_stack(&format!("main entry #{entry_no} args={args:?}"));
+    }
+    #[cfg(windows)]
+    if let Some(guest) = pe_loader::overlay_guest_for_current_exe() {
+        // Activated identity-overlay host: run the real title in-process, log next to the overlay.
+        redirect_stdio_to(&std::env::current_exe().unwrap().with_file_name("percy_run.log"));
+        if std::env::var("PERCY_QUIET").is_err() {
+            std::env::set_var("PERCY_TRACE", "1");
+        }
+        println!("[overlay] host={} guest={}", args[0], guest.display());
+        std::env::set_var("PERCY_OVERLAY", "1");
+        args = vec![args[0].clone(), "run".into(), guest.to_string_lossy().into_owned()];
+    }
+    match args.get(1).map(String::as_str) {
+        #[cfg(windows)]
+        Some("register") if args.len() >= 3 => {
+            let exe = std::path::PathBuf::from(fs::canonicalize(&args[2]).map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string()).unwrap_or_else(|_| args[2].clone()));
+            let host = std::env::current_exe().expect("current_exe");
+            match pe_loader::build_identity_overlay(&exe, &host) {
+                Ok(id) => {
+                    println!("Identity overlay: {}", id.display());
+                    let st = std::process::Command::new(wdapp_path()).arg("register").arg(id.parent().unwrap()).status();
+                    println!("wdapp register -> {st:?}");
+                }
+                Err(e) => eprintln!("register failed: {e}"),
+            }
+            return;
+        }
+        #[cfg(windows)]
+        Some("launch") if args.len() >= 3 => {
+            let exe = std::path::PathBuf::from(fs::canonicalize(&args[2]).map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string()).unwrap_or_else(|_| args[2].clone()));
+            let id = exe.parent().unwrap().join(pe_loader::IDENTITY_DIR).join(exe.file_name().unwrap());
+            if !id.exists() {
+                eprintln!("No identity overlay; run: percyscarlett register \"{}\"", exe.display());
+                return;
+            }
+            let st = std::process::Command::new(wdapp_path()).arg("launch").arg(&id).status();
+            println!("wdapp launch -> {st:?}; log: {}", id.with_file_name("percy_run.log").display());
+            return;
+        }
+        _ => {}
+    }
     match args.get(1).map(String::as_str) {
         Some("inspect") if args.len() >= 3 => match fs::read(&args[2]) {
             Ok(data) => match pe64::parse_pe64(&data) {
@@ -119,7 +188,14 @@ fn main() {
                     .ok()
                     .and_then(|p| p.parent().map(|d| d.to_path_buf()))
                     .unwrap_or_else(|| Path::new(".").to_path_buf());
-                match fs::read(exe_path) {
+                println!("[run] guest={} shim_dir={}", exe_path.display(), shim_dir.display());
+                let exe_bytes = fs::read(exe_path);
+                if !dry_run {
+                    if let Some(dir) = exe_path.parent() {
+                        let _ = std::env::set_current_dir(dir);
+                    }
+                }
+                match exe_bytes {
                     Ok(data) => match pe_loader::load_and_run_pe64(&data, &shim_dir, !dry_run) {
                         Ok((st, rc)) => {
                             let verb = if dry_run { "Dry-run mapped" } else { "Executed" };
@@ -204,6 +280,10 @@ fn main() {
                         FreeConsole();
                     }
                 }
+            }
+            #[cfg(windows)]
+            if std::env::var("PERCY_OVERLAY").is_ok() {
+                pe_loader::log_stack("gui entered in overlay mode");
             }
             if let Err(e) = gui::run_dashboard() {
                 eprintln!("GUI error: {e}");

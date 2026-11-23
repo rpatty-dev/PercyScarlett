@@ -227,8 +227,8 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                     uses_wave = true;
                     format!("{dst} = countbits(exec_lo) + countbits(exec_hi); scc = ({dst} != 0u) ? 1u : 0u;") // s_bcnt1_i32_b64
                 }
-                0x0F | 0x13 => format!("{dst} = firstbitlow({a});"), // s_ff1_i32_b32
-                0x17 => format!("{dst} = firstbithigh({a});"),       // s_flbit_i32_b32
+                0x0F | 0x13 | 0x14 => format!("{dst} = firstbitlow({a});"), // s_ff1_i32_b32 / b64
+                0x17 | 0x18 | 0x1B => format!("{dst} = firstbithigh({a});"), // s_flbit_i32_b32 / b64 / i64
                 0x1C => format!("{dst} = {dst} & ~(1u << ({a} & 31u));"), // s_bitset0_b32
                 0x1D => format!("{dst} = {dst} | (1u << ({a} & 31u));"),  // s_bitset1_b32
                 0x1F => {
@@ -294,6 +294,7 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                 0x0B => format!("scc = ({a} <= {b}) ? 1u : 0u;"),
                 0x0C => format!("scc = (({a} & (1u << ({b} & 31u))) == 0u) ? 1u : 0u;"),
                 0x0D => format!("scc = (({a} & (1u << ({b} & 31u))) != 0u) ? 1u : 0u;"),
+                0x0E..=0x13 => format!("scc = ({a} == {b}) ? 1u : 0u;"),
                 _ => {
                     is_known = false;
                     format!("/* UNKNOWN sopc_0x{op:02x} */")
@@ -362,7 +363,7 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                 0..=7 => hlsl_stmt = format!("exp_mrt[{target}] = {val};"),
                 32..=63 => hlsl_stmt = format!("exp_param[{}] = {val};", target - 32),
                 20 => hlsl_stmt = format!("/* exp_prim v[{},{},{}] */", vs[0], vs[1], vs[2]),
-                9..=11 | 21 => hlsl_stmt = format!("/* exp_misc target={target} */"),
+                8..=11 | 21 => hlsl_stmt = format!("/* exp_misc target={target} */"),
                 _ => {
                     is_known = false;
                     hlsl_stmt = format!("/* UNKNOWN exp target={target} en=0x{en:x} */");
@@ -530,17 +531,17 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                     );
                     format!("v_bfe_u32 v{vdst}")
                 }
-                0x154..=0x158 => {
+                0x149..=0x15F => {
                     hlsl_stmt = format!(
                         "v[{vdst}] = ({} + {} + {});",
-                        fmt_src(s0, None, false),
-                        fmt_src(s1, None, false),
-                        fmt_src(s2, None, false)
+                        fs(s0, false),
+                        fs(s1, false),
+                        fs(s2, false)
                     );
                     format!("v_vop3_0x{op:03x} v{vdst}")
                 }
-                0x300..=0x30F => {
-                    hlsl_stmt = format!("v[{vdst}] = ({} & 0xFFFFu) | (({} & 0xFFFFu) << 16);", fmt_src(s0, None, false), fmt_src(s1, None, false));
+                0x300..=0x31F => {
+                    hlsl_stmt = format!("v[{vdst}] = ({} & 0xFFFFu) | (({} & 0xFFFFu) << 16);", fs(s0, false), fs(s1, false));
                     format!("v_pack_0x{op:03x} v{vdst}")
                 }
                 0x342 => {
@@ -673,19 +674,23 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                     );
                     format!("v_alignbit_b32 v{vdst}")
                 }
-                0x170 | 0x177 => {
+                0x170 | 0x177 | 0x178 => {
                     uses_wave = true;
-                    hlsl_stmt = format!("v[{vdst}] = WaveReadLaneFirst({});", fmt_src(s0, None, false));
+                    hlsl_stmt = format!("v[{vdst}] = WaveReadLaneFirst({});", fs(s0, false));
                     format!("v_wave_0x{op:03x} v{vdst}")
                 }
-                0x160 | 0x360 => {
+                0x160 | 0x360 | 0x362 => {
                     uses_wave = true;
                     hlsl_stmt = format!(
                         "v[{vdst}] = WaveReadLaneAt({}, {});",
-                        fmt_src(s0, None, false),
-                        fmt_src(s1, None, false)
+                        fs(s0, false),
+                        fs(s1, false)
                     );
                     format!("v_readlane_b32 v{vdst}")
+                }
+                0x373 => {
+                    hlsl_stmt = format!("v[{vdst}] = ({} & 0xFFFFu) * ({} & 0xFFFFu) + {};", fs(s0, false), fs(s1, false), fs(s2, false));
+                    format!("v_mad_u32_u16 v{vdst}")
                 }
                 0x364 | 0x365 | 0x366 => {
                     uses_wave = true;
@@ -1022,7 +1027,7 @@ pub fn decode_rdna2(bytes: &[u8]) -> Vec<DecodedOp> {
                 0x1A | 0x1B => format!("{dst} = ~({a} ^ {b}); scc = ({dst} != 0u) ? 1u : 0u;"),
                 0x1C | 0x1D => format!("{dst} = {a} << ({b} & 31u);"),
                 0x1E | 0x1F => format!("{dst} = {a} >> ({b} & 31u);"),
-                0x20 => format!("{dst} = asuint(asint({a}) >> ({b} & 31u));"),
+                0x20..=0x22 => format!("{dst} = asuint(asint({a}) >> ({b} & 31u));"),
                 0x24 | 0x25 => format!("{dst} = ({a} >> ({b} & 31u)) & ((1u << (({b} >> 16) & 31u)) - 1u);"),
                 0x26 => format!("{dst} = ({a} & 0xFFFFu) | (({b} & 0xFFFFu) << 16);"),
                 0x27 => format!("{dst} = ({a} & 0xFFFFu) | ({b} & 0xFFFF0000u);"),
