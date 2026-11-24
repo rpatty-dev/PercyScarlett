@@ -22,6 +22,84 @@ extern "system" {
     fn GetCurrentProcessId() -> u32;
     fn GetCursorPos(p: *mut [i32; 2]) -> i32;
     fn QueryPerformanceCounter(c: *mut i64) -> i32;
+    fn LoadLibraryA(name: *const u8) -> usize;
+    fn GetProcAddress(h: usize, name: *const u8) -> usize;
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct XInputGamepad {
+    buttons: u16,
+    lt: u8,
+    rt: u8,
+    lx: i16,
+    ly: i16,
+    rx: i16,
+    ry: i16,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct XInputState {
+    packet: u32,
+    pad: XInputGamepad,
+}
+
+#[cfg(windows)]
+fn poll_xinput(s: &mut GameInputGamepadState) {
+    type FnGetState = unsafe extern "system" fn(u32, *mut XInputState) -> u32;
+    static FN: std::sync::OnceLock<Option<FnGetState>> = std::sync::OnceLock::new();
+    let Some(get_state) = *FN.get_or_init(|| unsafe {
+        for dll in [b"xinput1_4.dll\0".as_slice(), b"xinput1_3.dll\0", b"xinput9_1_0.dll\0"] {
+            let h = LoadLibraryA(dll.as_ptr());
+            if h != 0 {
+                let p = GetProcAddress(h, b"XInputGetState\0".as_ptr());
+                if p != 0 {
+                    return Some(std::mem::transmute::<usize, FnGetState>(p));
+                }
+            }
+        }
+        None
+    }) else {
+        return;
+    };
+    let mut xs = XInputState::default();
+    for idx in 0..4u32 {
+        if unsafe { get_state(idx, &mut xs) } != 0 {
+            continue;
+        }
+        let b = xs.pad.buttons;
+        if b & 0x0010 != 0 { s.buttons |= 0x1; }    // Start -> Menu
+        if b & 0x0020 != 0 { s.buttons |= 0x2; }    // Back -> View
+        if b & 0x1000 != 0 { s.buttons |= 0x4; }    // A
+        if b & 0x2000 != 0 { s.buttons |= 0x8; }    // B
+        if b & 0x4000 != 0 { s.buttons |= 0x10; }   // X
+        if b & 0x8000 != 0 { s.buttons |= 0x20; }   // Y
+        if b & 0x0001 != 0 { s.buttons |= 0x40; }   // DPad Up
+        if b & 0x0002 != 0 { s.buttons |= 0x80; }   // DPad Down
+        if b & 0x0004 != 0 { s.buttons |= 0x100; }  // DPad Left
+        if b & 0x0008 != 0 { s.buttons |= 0x200; }  // DPad Right
+        if b & 0x0100 != 0 { s.buttons |= 0x400; }  // LB
+        if b & 0x0200 != 0 { s.buttons |= 0x800; }  // RB
+        if b & 0x0040 != 0 { s.buttons |= 0x1000; } // LS
+        if b & 0x0080 != 0 { s.buttons |= 0x2000; } // RS
+        let lt = xs.pad.lt as f32 / 255.0;
+        let rt = xs.pad.rt as f32 / 255.0;
+        if lt > s.left_trigger { s.left_trigger = lt; }
+        if rt > s.right_trigger { s.right_trigger = rt; }
+        let norm = |v: i16| {
+            let f = (v as f32 / 32767.0).clamp(-1.0, 1.0);
+            if f.abs() < 0.12 { 0.0 } else { f }
+        };
+        let (lx, ly, rx, ry) = (norm(xs.pad.lx), norm(xs.pad.ly), norm(xs.pad.rx), norm(xs.pad.ry));
+        if lx != 0.0 { s.left_thumbstick_x = lx; }
+        if ly != 0.0 { s.left_thumbstick_y = ly; }
+        if rx != 0.0 { s.right_thumbstick_x = rx; }
+        if ry != 0.0 { s.right_thumbstick_y = ry; }
+        break;
+    }
 }
 
 fn down(vk: i32) -> bool {
@@ -81,10 +159,16 @@ pub fn state() -> GameInputGamepadState {
     if let Some(s) = scripted() {
         if s.buttons != 0 || s.left_trigger != 0.0 || s.right_trigger != 0.0 || s.left_thumbstick_x != 0.0
             || s.left_thumbstick_y != 0.0 || s.right_thumbstick_x != 0.0 || s.right_thumbstick_y != 0.0 {
+            static LAST_B: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if LAST_B.swap(s.buttons, Ordering::Relaxed) != s.buttons {
+                eprintln!("[gi] vpad scripted buttons={:#x}", s.buttons);
+            }
             return s;
         }
     }
     let mut s = GameInputGamepadState::default();
+    #[cfg(windows)]
+    poll_xinput(&mut s);
     if !focused() {
         return s;
     }

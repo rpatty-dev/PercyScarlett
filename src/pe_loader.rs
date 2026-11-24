@@ -1363,6 +1363,32 @@ unsafe extern "system" fn trace_veh(info: *const c_void) -> i32 {
             return -1;
         }
     }
+    if code == 0xC000_0005 {
+        let ctx = *((info as *const *mut u64).add(1));
+        let rip = *ctx.add(0xF8 / 8) as usize;
+        let va = *(er.add(10) as *const usize);
+        let gb = GUEST_IMAGE_BASE.load(std::sync::atomic::Ordering::Acquire);
+        // Intentional GPU hang-watchdog trap (`GPU Loc Sig`: mov dword ptr [0], 0x4d8bd421, 11 bytes)
+        // fires during slow CPU-decompressed streaming even while PresentX is actively advancing.
+        if va == 0 && gb != 0 && rip > gb && rip < gb + 0x1000_0000 {
+            let insn = std::slice::from_raw_parts(rip as *const u8, 12);
+            let skip = if insn[..11] == [0xC7, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00, 0x21, 0xD4, 0x8B, 0x4D] {
+                11usize
+            } else if insn == [0xC7, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xCC] {
+                12usize
+            } else {
+                0usize
+            };
+            if skip != 0 {
+                static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 8 {
+                    raw_stderr(&format!("[watchdog] skipped GPU Loc Sig trap ({skip}B) at G+{:x}\n", rip - gb));
+                }
+                *ctx.add(0xF8 / 8) = (rip + skip) as u64;
+                return -1; // EXCEPTION_CONTINUE_EXECUTION
+            }
+        }
+    }
     if code == 0xE06D_7363 || code == 0xC000_0005 {
         let ctx = *((info as *const *const u64).add(1));
         let _rip = *ctx.add(0xF8 / 8);
@@ -1398,7 +1424,19 @@ unsafe extern "system" fn trace_veh(info: *const c_void) -> i32 {
         let frames = if code == 0xE06D_7363 { compact_frames(rsp, 16384, 40) } else { compact_frames(rsp, 512, 8) };
         let (rm, ro) = describe_addr(_rip as usize);
         let _ = guest;
-        let extra = if code == 0xE06D_7363 { format!(" hr={q3:08x} {_msg}") } else { format!(" va={:#x} rcx={_rcx:#x} rdx={_rdx:#x} r8={:#x}", obj as usize, *ctx.add(0xB8 / 8)) };
+        let extra = if code == 0xE06D_7363 {
+            format!(" hr={q3:08x} {_msg}")
+        } else {
+            #[repr(C)]
+            struct Mbi { base: usize, alloc: usize, ap: u32, part: u16, sz: usize, st: u32, pr: u32, ty: u32 }
+            extern "system" { fn VirtualQuery(p: usize, m: *mut Mbi, n: usize) -> usize; }
+            let mut m: Mbi = std::mem::zeroed();
+            let q = VirtualQuery(obj as usize, &mut m, std::mem::size_of::<Mbi>());
+            format!(
+                " va={:#x} rcx={_rcx:#x} rdx={_rdx:#x} r8={:#x} mbi({q}:st={:#x},pr={:#x},ab={:#x},sz={:#x})",
+                obj as usize, *ctx.add(0xB8 / 8), m.st, m.pr, m.alloc, m.sz
+            )
+        };
         raw_stderr(&format!("[veh] {code:08x} @{} {extra} | {frames}\n", short_mod(&rm, ro)));
     }
     0 // EXCEPTION_CONTINUE_SEARCH

@@ -36,8 +36,8 @@ Clean-room Rust translation layer that runs unencrypted Xbox Series X|S (Scarlet
 | Retail Xbox Series X\|S game | Minecraft (Scarlett build, unmodified exe): boots, main menu, creates/saves/reloads a world, in-game | screenshots above |
 | Loader | Maps the title in-process: relocations, `.pdata`, guest static TLS, import routing, user-path virtualization | `src/pe_loader.rs` |
 | Graphics | D3D12.X command lists replayed onto PC D3D12, console present into a DXGI swap chain | `crates/d3d12_xs/src/{replay,console_list,present}.rs` |
-| Shaders | Minecraft ships DXIL, so its shaders run as-is. The RDNA2 → DXIL lifter is experimental: only its strict mode (used by tests) rejects unknown instructions; the runtime path does not yet | `crates/d3d12_xs/src/rdna2_hlsl.rs` |
-| GTA VI | Boots to a running frame loop and first `PresentX` (black frames); stops at a GPU hang (887a0006) about 5 s in, plus an intermittent early device removal. Shader stand-ins, console bottom-of-pipe writes and memory waits are in. Help welcome | `docs/TheBig6.md` |
+| Shaders | Minecraft ships DXIL, so its shaders run as-is. Retail RDNA2/GFX10 shaders (VS + PS) are lifted to SM 6.6 HLSL (`hlsl_xbox.rs`), compiled via DXC, and bound into live PC graphics PSOs (`gfx_pso.rs`, `desc_mirror.rs`) | `crates/d3d12_xs/src/{hlsl_xbox,dxbc_xbox,gfx_pso,desc_mirror}.rs` |
+| TheBig6 😉 | Clean-room graphics bring-up: RDNA2/GFX10 VS+PS lifted to SM 6.6 HLSL and bound into live PC graphics PSOs; renders account picker, true-color 4K Bink2 video playback, and full FTUE/setup UI flow with persistent settings, XInput gamepad support, and world streaming | `docs/TheBig6.md` |
 
 ---
 

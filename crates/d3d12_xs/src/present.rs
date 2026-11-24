@@ -23,7 +23,18 @@ const IID_FENCE: [u8; 16] = [0xcf, 0x3d, 0x75, 0x0a, 0xd8, 0xc4, 0x91, 0x4b, 0xa
 
 const RING: usize = 3;
 
+static CAP_TRIG: AtomicU32 = AtomicU32::new(0);
+static CAP_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Schedule a frame readback capture 2 presents after a new graphics PSO compiles.
+pub fn request_capture() {
+    if CAP_COUNT.fetch_add(1, Ordering::Relaxed) < 32 {
+        CAP_TRIG.store(2, Ordering::Relaxed);
+    }
+}
+
 struct Presenter {
+    dev: usize,
     queue: usize,
     title_queue: usize,
     swap: usize, // IDXGISwapChain3
@@ -31,7 +42,7 @@ struct Presenter {
     allocs: [usize; RING],
     list: usize,
     fence: usize,
-    /// title queue -> our queue ordering; separate from ence (two queues signalling one fence can move it backwards)
+    /// title queue -> our queue ordering; separate from fence (two queues signalling one fence can move it backwards)
     tfence: usize,
     event: usize,
     fence_val: u64,
@@ -40,6 +51,8 @@ struct Presenter {
     w: u32,
     h: u32,
     fmt: u32,
+    rb_buf: usize,
+    rb_pitch: u32,
 }
 unsafe impl Send for Presenter {}
 
@@ -175,6 +188,7 @@ unsafe fn create(queue: *mut c_void, src: *mut c_void) -> Result<Presenter, Stri
         cfn(dev, 0, 0, IID_FENCE.as_ptr(), &mut tfence);
     log_d3d12(&format!("[present] swap chain {w}x{h} fmt={fmt} (src fmt {sfmt}) hwnd={hwnd:#x}"));
     Ok(Presenter {
+        dev: dev as usize,
         queue: queue as usize,
         title_queue: title_queue as usize,
         swap: sc as usize,
@@ -182,7 +196,7 @@ unsafe fn create(queue: *mut c_void, src: *mut c_void) -> Result<Presenter, Stri
         allocs,
         list: list as usize,
         fence: fence as usize,
-            tfence: tfence as usize,
+        tfence: tfence as usize,
         event: CreateEventW(std::ptr::null_mut(), 0, 0, std::ptr::null()),
         fence_val: 0,
         slot_fence: [0; RING],
@@ -190,6 +204,8 @@ unsafe fn create(queue: *mut c_void, src: *mut c_void) -> Result<Presenter, Stri
         w,
         h,
         fmt: sfmt,
+        rb_buf: 0,
+        rb_pitch: 0,
     })
 }
 
@@ -236,6 +252,49 @@ impl Presenter {
         let ctr: unsafe extern "system" fn(*mut c_void, *const u8, u32, u32, u32, *const u8, *const u32) = m(list, 16);
         let bx: [u32; 6] = [0, 0, 0, self.w, self.h, 1];
         ctr(list, dloc.as_ptr(), 0, 0, 0, sloc.as_ptr(), bx.as_ptr());
+
+        let next_n = FRAMES.load(Ordering::Relaxed) + 1;
+        let trig = CAP_TRIG.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            if v > 0 { Some(v - 1) } else { None }
+        }).ok().map(|v| v == 1).unwrap_or(false);
+        let do_cap = (trig || matches!(next_n, 16 | 160 | 600 | 900 | 1200)
+            || (next_n >= 1120 && next_n < 1700 && next_n % 120 == 0)
+            || (next_n >= 1700 && next_n <= 10000 && next_n % 30 == 0))
+            && matches!(self.fmt, 27 | 28 | 29 | 87 | 90 | 91);
+        if do_cap {
+            if self.rb_buf == 0 {
+                let pitch = (self.w * 4 + 255) & !255;
+                let total = pitch as u64 * self.h as u64;
+                let dev = self.dev as *mut c_void;
+                let props: [u32; 5] = [3, 0, 0, 1, 1]; // HEAP_TYPE_READBACK
+                let mut rdesc = [0u8; 56];
+                rdesc[0..4].copy_from_slice(&1u32.to_le_bytes()); // BUFFER
+                rdesc[16..24].copy_from_slice(&total.to_le_bytes());
+                rdesc[24..28].copy_from_slice(&1u32.to_le_bytes());
+                rdesc[28..30].copy_from_slice(&1u16.to_le_bytes());
+                rdesc[30..32].copy_from_slice(&1u16.to_le_bytes());
+                rdesc[36..40].copy_from_slice(&1u32.to_le_bytes());
+                rdesc[44..48].copy_from_slice(&1u32.to_le_bytes()); // ROW_MAJOR
+                let ccr: unsafe extern "system" fn(*mut c_void, *const u32, u32, *const u8, u32, *const c_void, *const u8, *mut *mut c_void) -> i32 = m(dev, 27);
+                let mut rb = std::ptr::null_mut();
+                if ccr(dev, props.as_ptr(), 0, rdesc.as_ptr(), COPY_DEST, std::ptr::null(), IID_RESOURCE.as_ptr(), &mut rb) >= 0 && !rb.is_null() {
+                    self.rb_buf = rb as usize;
+                    self.rb_pitch = pitch;
+                }
+            }
+            if self.rb_buf != 0 {
+                let mut rloc = [0u8; 48];
+                rloc[0..8].copy_from_slice(&self.rb_buf.to_le_bytes());
+                rloc[8..12].copy_from_slice(&1u32.to_le_bytes()); // PLACED_FOOTPRINT
+                rloc[24..28].copy_from_slice(&presentable(self.fmt).to_le_bytes());
+                rloc[28..32].copy_from_slice(&self.w.to_le_bytes());
+                rloc[32..36].copy_from_slice(&self.h.to_le_bytes());
+                rloc[36..40].copy_from_slice(&1u32.to_le_bytes());
+                rloc[40..44].copy_from_slice(&self.rb_pitch.to_le_bytes());
+                ctr(list, rloc.as_ptr(), 0, 0, 0, sloc.as_ptr(), bx.as_ptr());
+            }
+        }
+
         let post = [transition(src as usize, COPY_SRC, 0), transition(bb, COPY_DEST, 0)];
         bar(list, 2, post.as_ptr());
         let close: unsafe extern "system" fn(*mut c_void) -> i32 = m(list, 9);
@@ -259,6 +318,45 @@ impl Presenter {
         let signal: unsafe extern "system" fn(*mut c_void, *mut c_void, u64) -> i32 = m(q, 14);
         signal(q, fence, self.fence_val);
         self.slot_fence[slot] = self.fence_val;
+        if do_cap && self.rb_buf != 0 && hr >= 0 && !no_blit {
+            let on: unsafe extern "system" fn(*mut c_void, u64, usize) -> i32 = m(fence, 9);
+            on(fence, self.fence_val, self.event);
+            WaitForSingleObject(self.event, 2000);
+            let rb = self.rb_buf as *mut c_void;
+            let map: unsafe extern "system" fn(*mut c_void, u32, *const c_void, *mut *mut u8) -> i32 = m(rb, 8);
+            let unmap: unsafe extern "system" fn(*mut c_void, u32, *const c_void) = m(rb, 9);
+            let mut ptr = std::ptr::null_mut();
+            if map(rb, 0, std::ptr::null(), &mut ptr) >= 0 && !ptr.is_null() {
+                let (w, h, pitch) = (self.w as usize, self.h as usize, self.rb_pitch as usize);
+                let bgra = matches!(self.fmt, 87 | 90 | 91);
+                let step = (w / 960).max(1);
+                let (ow, oh) = (w / step, h / step);
+                let mut ppm = Vec::with_capacity(32 + ow * oh * 3);
+                ppm.extend_from_slice(format!("P6\n{ow} {oh}\n255\n").as_bytes());
+                let mut non_black = 0usize;
+                let mut first = [0u8; 3];
+                for y in (0..oh * step).step_by(step) {
+                    let row = std::slice::from_raw_parts(ptr.add(y * pitch), w * 4);
+                    for x in (0..ow * step).step_by(step) {
+                        let px = &row[x * 4..x * 4 + 4];
+                        let (r, g, b) = if bgra { (px[2], px[1], px[0]) } else { (px[0], px[1], px[2]) };
+                        if (r | g | b) != 0 {
+                            if non_black == 0 { first = [r, g, b]; }
+                            non_black += 1;
+                        }
+                        ppm.extend_from_slice(&[r, g, b]);
+                    }
+                }
+                unmap(rb, 0, std::ptr::null());
+                let out_path = super::pso_guard::dir().join(format!("frame_{next_n}.ppm"));
+                let _ = std::fs::write(&out_path, &ppm);
+                log_d3d12(&format!(
+                    "[present] CAPTURE frame={next_n} src={src:p} draws={} non_black={non_black}/{} ({:.1}%) first_rgb=({},{},{}) -> {}",
+                    super::gfx_pso::drawn_ok_count(), ow * oh, (non_black as f64 * 100.0) / (ow * oh).max(1) as f64,
+                    first[0], first[1], first[2], out_path.display()
+                ));
+            }
+        }
         let pres: unsafe extern "system" fn(*mut c_void, u32, u32) -> i32 = m(sc, 8);
         let phr = pres(sc, 1, 0);
         let n = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;

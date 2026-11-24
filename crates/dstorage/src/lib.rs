@@ -13,6 +13,50 @@ const E_FAIL: i32 = 0x8000_4005u32 as i32;
 #[cfg(windows)]
 extern "system" {
     fn SetEvent(h_event: usize) -> i32;
+    fn VirtualQuery(addr: *const c_void, buf: *mut Mbi, len: usize) -> usize;
+    fn VirtualAlloc(addr: *mut c_void, size: usize, alloc_type: u32, protect: u32) -> *mut c_void;
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct Mbi {
+    base: usize,
+    alloc_base: usize,
+    alloc_prot: u32,
+    part: u16,
+    size: usize,
+    state: u32,
+    prot: u32,
+    ty: u32,
+}
+
+#[cfg(windows)]
+unsafe fn ensure_writable(dst: *mut u8, len: usize) -> bool {
+    let mut cur = dst as usize;
+    let end = cur.saturating_add(len);
+    while cur < end {
+        let mut m: Mbi = std::mem::zeroed();
+        if VirtualQuery(cur as *const c_void, &mut m, std::mem::size_of::<Mbi>()) == 0 || m.size == 0 {
+            return false;
+        }
+        let chunk_end = m.base.saturating_add(m.size).min(end);
+        let chunk = chunk_end.saturating_sub(cur);
+        if m.state == 0x2000 {
+            // MEM_RESERVE (e.g. console physical pool VA): commit on demand before DirectStorage write.
+            let p = VirtualAlloc(cur as *mut c_void, chunk, 0x1000, 0x04);
+            if p.is_null() {
+                static NF: AtomicU32 = AtomicU32::new(0);
+                if NF.fetch_add(1, Ordering::Relaxed) < 8 {
+                    eprintln!("[dstorage] commit MEM_RESERVE failed va={cur:#x} len={chunk:#x}");
+                }
+                return false;
+            }
+        } else if m.state != 0x1000 || (m.prot & 0xCC) == 0 {
+            return false;
+        }
+        cur = chunk_end;
+    }
+    true
 }
 
 #[repr(C)]
@@ -330,6 +374,10 @@ unsafe extern "system" fn queue_enqueue_req(_this: *mut c_void, req: *const DSto
     } else {
         std::slice::from_raw_parts(src.add(off as usize), ssz).to_vec()
     };
+    #[cfg(windows)]
+    if !ensure_writable(dst, dsz) {
+        return;
+    }
     let out = std::slice::from_raw_parts_mut(dst, dsz);
     match opt & 0xff {
         0 => {

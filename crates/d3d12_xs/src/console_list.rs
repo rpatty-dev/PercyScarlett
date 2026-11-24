@@ -303,11 +303,17 @@ unsafe fn hist_push(obj: usize, slot: usize) {
     if obj & 0xfff == 0xff8 || inner_of(obj as *mut c_void).is_none() {
         return;
     }
+    {
+        // Debug: full call trace per list (capped) to find the list that hangs the GPU.
+        static TN: AtomicU32 = AtomicU32::new(0);
+        if TN.fetch_add(1, Ordering::Relaxed) < 4000 { log_d3d12(&format!("[ltr] {obj:#x} {slot}")); }
+    }
     let base = (obj + OBJ_SIZE - 0x50) as *mut usize;
     let i = *base;
     *base.add(1 + (i & 7)) = slot;
     *base = i + 1;
 }
+pub(crate) unsafe fn hist_pub(obj: *mut c_void) -> String { hist(obj) }
 unsafe fn hist(obj: *mut c_void) -> String {
     let base = ((obj as usize) + OBJ_SIZE - 0x50) as *const usize;
     let n = *base;
@@ -413,6 +419,10 @@ fn vtbl() -> usize {
         for i in 27..31 {
             v[i] = LOGONLY[i - 11] as usize;
         }
+        v[12] = cl_draw_instanced as usize;
+        v[13] = cl_draw_indexed_instanced as usize;
+        v[14] = cl_dispatch as usize;
+        v[20] = cl_set_topology as usize;
         v[26] = cl_resource_barrier as usize;
         v[19] = cl_resolve_subresource as usize;
         v[32] = cl_set_descriptor_heaps as usize;
@@ -422,6 +432,21 @@ fn vtbl() -> usize {
         v[15] = cl_copy_buffer_region as usize;
         v[17] = cl_copy_resource as usize;
         v[34] = cl_set_gfx_rs as usize;
+        v[35] = cl_set_cs_table as usize;
+        v[36] = cl_set_gfx_table as usize;
+        v[37] = cl_set_cs_const as usize;
+        v[38] = cl_set_gfx_const as usize;
+        v[39] = cl_set_cs_consts as usize;
+        v[40] = cl_set_gfx_consts as usize;
+        v[41] = cl_set_cs_cbv as usize;
+        v[42] = cl_set_gfx_cbv as usize;
+        v[43] = cl_set_cs_srv as usize;
+        v[44] = cl_set_gfx_srv as usize;
+        v[45] = cl_set_cs_uav as usize;
+        v[46] = cl_set_gfx_uav as usize;
+        v[47] = cl_set_ib as usize;
+        v[48] = cl_set_vbs as usize;
+        v[127] = cl_dispatch_mesh as usize;
         v[9] = cl_close as usize;
         v[10] = cl_reset as usize;
         v[139] = cl_reset_x as usize;
@@ -430,7 +455,7 @@ fn vtbl() -> usize {
         v[72] = super::cpu_writes::write64_bottom as usize;
         v[73] = super::cpu_writes::wait32 as usize;
         v[74] = super::cpu_writes::wait64 as usize;
-        if let Ok(s) = std::fs::read_to_string(std::env::current_exe().unwrap_or_default().with_file_name("percy_clx_drop.txt")) {
+        if let Ok(s) = std::fs::read_to_string(super::pso_guard::dir().join("percy_clx_drop.txt")) {
             for i in s.split(',').filter_map(|x| x.trim().parse::<usize>().ok()).filter(|&i| (11..60).contains(&i)) {
                 v[i] = LOGONLY[i - 11] as usize;
             }
@@ -455,11 +480,11 @@ pub(crate) unsafe fn buf_start(obj: *mut c_void) -> *mut u8 {
 }
 
 pub(crate) unsafe fn rewind(obj: *mut c_void) {
+    // Null put pointer and all 4 limits: title inline helpers fall through to our COM vtable slots.
     let o = obj as *mut u8;
-    let b = buf_start(obj);
-    *(o.add(OFF_WP) as *mut *mut u8) = b;
-    *(o.add(OFF_LIMIT) as *mut *mut u8) = b.add(BUF_SIZE);
-    *(o.add(OFF_END) as *mut *mut u8) = b.add(BUF_SIZE);
+    for off in [0x18usize, 0x20, 0x28, 0x30, 0x38] {
+        *(o.add(off) as *mut u64) = 0;
+    }
 }
 
 /// Wrap a PC command list in a console-layout object.
@@ -479,8 +504,7 @@ pub(crate) unsafe fn wrap(inner: *mut c_void) -> *mut c_void {
         return obj as *mut c_void;
     }
     let block = VirtualAlloc(std::ptr::null_mut(), OBJ_SIZE + 16, 0x3000, 0x04) as *mut u8;
-    let buf = VirtualAlloc(std::ptr::null_mut(), BUF_SIZE, 0x3000, 0x04) as *mut u8;
-    if block.is_null() || buf.is_null() {
+    if block.is_null() {
         return inner;
     }
     let h = block as *mut Hdr;
@@ -488,7 +512,7 @@ pub(crate) unsafe fn wrap(inner: *mut c_void) -> *mut c_void {
     (*h).inner = inner;
     let obj = block.add(16) as *mut c_void;
     *(obj as *mut usize) = vtbl();
-    *((obj as *mut u8).add(OBJ_SIZE - 8) as *mut *mut u8) = buf;
+    *((obj as *mut u8).add(OBJ_SIZE - 8) as *mut *mut u8) = std::ptr::null_mut();
     rewind(obj);
     obj
 }
@@ -576,7 +600,9 @@ unsafe extern "system" fn cl_reset(obj: *mut c_void, alloc: *mut c_void, pso: *m
     if RESETS.fetch_add(1, Ordering::Relaxed) < 6 {
         log_d3d12(&format!("[clx] Reset obj={obj:p}"));
     }
-    let pso = super::replay::unwrap_pso(pso);
+    super::gfx_pso::reset(obj, pso);
+    let pso = if super::gfx_pso::is_lazy_pso(pso) { std::ptr::null_mut() } else { let u = super::replay::unwrap_pso(pso); if u as usize == super::replay::unwrap_pso(super::pso_fallback_raw() as *mut c_void) as usize { std::ptr::null_mut() } else { u } };
+    super::replay::note_reset_pso(obj, pso);
     if (obj as usize) & 0xfff != 0xff8 {
         rewind(obj);
         super::replay::reset_state(obj);
@@ -781,6 +807,7 @@ unsafe extern "system" fn cl_resolve_subresource(obj: *mut c_void, dst: *mut c_v
 unsafe extern "system" fn cl_set_descriptor_heaps(obj: *mut c_void, n: u32, heaps: *const *mut c_void) {
     super::replay::flush(obj);
     super::replay::set_heaps(obj, n, heaps);
+    super::gfx_pso::set_heaps(obj, n, heaps);
     hist_push(obj as usize, 32);
     static N: AtomicU32 = AtomicU32::new(0);
     if N.fetch_add(1, Ordering::Relaxed) < 4 {
@@ -803,10 +830,15 @@ unsafe extern "system" fn cl_set_descriptor_heaps(obj: *mut c_void, n: u32, heap
 /// handles point into title-placed heaps: translate to the host heap.
 unsafe extern "system" fn cl_clear_rtv(obj: *mut c_void, rtv: usize, color: *const f32, n: u32, rects: *const c_void) {
     super::replay::flush(obj);
+    hist_push(obj as usize, 52);
     let h = super::xlate_cpu(rtv);
     static N: AtomicU32 = AtomicU32::new(0);
     if N.fetch_add(1, Ordering::Relaxed) < 4 && !color.is_null() {
         log_d3d12(&format!("[clx] ClearRTV {rtv:#x}->{h:#x} rgba=({},{},{},{}) n={n}", *color, *color.add(1), *color.add(2), *color.add(3)));
+    }
+    static NO_CLEAR: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *NO_CLEAR.get_or_init(|| super::pso_guard::dir().join("percy_no_clear").exists()) {
+        return; // debug flag: hang bisect
     }
     let (inner, f) = inner_fn(obj, 48);
     let f: unsafe extern "system" fn(*mut c_void, usize, *const f32, u32, *const c_void) = std::mem::transmute(f);
@@ -825,22 +857,65 @@ unsafe extern "system" fn cl_om_set_rts(obj: *mut c_void, n: u32, rtvs: *const u
     let k = if single != 0 { n.min(1) } else { n } as usize;
     let r: Vec<usize> = if rtvs.is_null() { vec![] } else { (0..k).map(|i| super::xlate_cpu(*rtvs.add(i))).collect() };
     let d = if dsv.is_null() { 0 } else { super::xlate_cpu(*dsv) };
+    super::gfx_pso::set_rts(obj, &r, d);
     let (inner, f) = inner_fn(obj, 46);
     let f: unsafe extern "system" fn(*mut c_void, u32, *const usize, i32, *const usize) = std::mem::transmute(f);
     f(inner, n, if rtvs.is_null() { rtvs } else { r.as_ptr() }, single, if dsv.is_null() { dsv } else { &d })
 }
 
-/// Console slot 25 = SetPipelineState (PC 25): method-call fallback of the inline record.
+/// Console slot 12 = DrawInstanced, slot 13 = DrawIndexedInstanced, slot 14 = Dispatch.
+unsafe extern "system" fn cl_draw_instanced(obj: *mut c_void, vcnt: u32, icnt: u32, sv: u32, si: u32) {
+    hist_push(obj as usize, 12);
+    let inner = inner_of(obj).unwrap_or(obj);
+    super::gfx_pso::on_draw(obj, inner, false, vcnt, icnt, sv, 0, si);
+}
+unsafe extern "system" fn cl_draw_indexed_instanced(obj: *mut c_void, icnt: u32, inst: u32, si: u32, bv: i32, sinst: u32) {
+    hist_push(obj as usize, 13);
+    let inner = inner_of(obj).unwrap_or(obj);
+    super::gfx_pso::on_draw(obj, inner, true, icnt, inst, si, bv, sinst);
+}
+unsafe extern "system" fn cl_dispatch(obj: *mut c_void, x: u32, y: u32, z: u32) {
+    hist_push(obj as usize, 14);
+    super::gfx_pso::note_dispatch();
+    if super::gfx_pso::is_real_pc_compute_pso(obj).is_some() {
+        let (inner, f) = inner_fn(obj, 14);
+        let f: unsafe extern "system" fn(*mut c_void, u32, u32, u32) = std::mem::transmute(f);
+        f(inner, x, y, z);
+    }
+}
+unsafe extern "system" fn cl_dispatch_mesh(obj: *mut c_void, x: u32, y: u32, z: u32) {
+    hist_push(obj as usize, 127);
+    super::gfx_pso::on_dispatch_mesh(obj, x, y, z);
+}
+unsafe extern "system" fn cl_set_topology(obj: *mut c_void, topo: u32) {
+    hist_push(obj as usize, 20);
+    super::gfx_pso::set_topology(obj, topo);
+    let host_topo = match topo { 17 | 18 | 19 | 20 | 32 => 4, t => t };
+    let (inner, f) = inner_fn(obj, 20);
+    let f: unsafe extern "system" fn(*mut c_void, u32) = std::mem::transmute(f);
+    f(inner, host_topo);
+}
+
+/// Console slot 25 = SetPipelineState (PC 25).
 unsafe extern "system" fn cl_set_pso(obj: *mut c_void, pso: *mut c_void) {
-    super::replay::flush(obj);
+    hist_push(obj as usize, 25);
+    super::gfx_pso::set_pso(obj, pso);
+    if super::gfx_pso::is_lazy_pso(pso) {
+        return;
+    }
+    let u = super::replay::unwrap_pso(pso);
+    if u.is_null() || u as usize == super::replay::unwrap_pso(super::pso_fallback_raw() as *mut c_void) as usize {
+        return;
+    }
     let (inner, f) = inner_fn(obj, 25);
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void) = std::mem::transmute(f);
-    f(inner, super::replay::unwrap_pso(pso))
+    f(inner, u)
 }
 
 /// Console slot 33/34 = SetCompute/GraphicsRootSignature (PC 29/30).
 unsafe extern "system" fn cl_set_cs_rs(obj: *mut c_void, rs: *mut c_void) {
-    super::replay::flush(obj);
+    hist_push(obj as usize, 33);
+    super::gfx_pso::set_rs(obj, rs, true);
     super::replay::set_root_signature(obj, rs, true);
     let (inner, f) = inner_fn(obj, 29);
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void) = std::mem::transmute(f);
@@ -853,7 +928,8 @@ thread_local! {
 unsafe extern "system" fn cl_set_gfx_rs(obj: *mut c_void, rs: *mut c_void) {
     let st = |n| GFX_RS_STEP.with(|c| c.set((n, obj as usize, rs as usize)));
     st(1);
-    super::replay::flush(obj);
+    hist_push(obj as usize, 34);
+    super::gfx_pso::set_rs(obj, rs, false);
     st(2);
     super::replay::set_root_signature(obj, rs, false);
     let (inner, f) = inner_fn(obj, 30);
@@ -861,6 +937,72 @@ unsafe extern "system" fn cl_set_gfx_rs(obj: *mut c_void, rs: *mut c_void) {
     st(3);
     f(inner, rs);
     st(0);
+}
+unsafe extern "system" fn cl_set_cs_table(obj: *mut c_void, idx: u32, h: u64) {
+    super::gfx_pso::set_root_table(obj, true, idx, h);
+    let (inner, f) = inner_fn(obj, 31);
+    let f: unsafe extern "system" fn(*mut c_void, u32, u64) = std::mem::transmute(f);
+    f(inner, idx, h)
+}
+unsafe extern "system" fn cl_set_gfx_table(obj: *mut c_void, idx: u32, h: u64) {
+    super::gfx_pso::set_root_table(obj, false, idx, h);
+}
+unsafe extern "system" fn cl_set_cs_const(obj: *mut c_void, idx: u32, val: u32, off: u32) {
+    super::gfx_pso::set_root_consts(obj, true, idx, &[val], off);
+    let (inner, f) = inner_fn(obj, 33);
+    let f: unsafe extern "system" fn(*mut c_void, u32, u32, u32) = std::mem::transmute(f);
+    f(inner, idx, val, off)
+}
+unsafe extern "system" fn cl_set_gfx_const(obj: *mut c_void, idx: u32, val: u32, off: u32) {
+    super::gfx_pso::set_root_consts(obj, false, idx, &[val], off);
+}
+unsafe extern "system" fn cl_set_cs_consts(obj: *mut c_void, idx: u32, n: u32, vals: *const u32, off: u32) {
+    if !vals.is_null() && n <= 64 {
+        super::gfx_pso::set_root_consts(obj, true, idx, std::slice::from_raw_parts(vals, n as usize), off);
+    }
+    let (inner, f) = inner_fn(obj, 35);
+    let f: unsafe extern "system" fn(*mut c_void, u32, u32, *const u32, u32) = std::mem::transmute(f);
+    f(inner, idx, n, vals, off)
+}
+unsafe extern "system" fn cl_set_gfx_consts(obj: *mut c_void, idx: u32, n: u32, vals: *const u32, off: u32) {
+    if !vals.is_null() && n <= 64 {
+        super::gfx_pso::set_root_consts(obj, false, idx, std::slice::from_raw_parts(vals, n as usize), off);
+    }
+}
+unsafe extern "system" fn cl_set_cs_cbv(obj: *mut c_void, idx: u32, va: u64) {
+    super::gfx_pso::set_root_view(obj, true, idx, va);
+    let (inner, f) = inner_fn(obj, 37);
+    let f: unsafe extern "system" fn(*mut c_void, u32, u64) = std::mem::transmute(f);
+    f(inner, idx, va)
+}
+unsafe extern "system" fn cl_set_gfx_cbv(obj: *mut c_void, idx: u32, va: u64) {
+    super::gfx_pso::set_root_view(obj, false, idx, va);
+}
+unsafe extern "system" fn cl_set_cs_srv(obj: *mut c_void, idx: u32, va: u64) {
+    super::gfx_pso::set_root_view(obj, true, idx, va);
+    let (inner, f) = inner_fn(obj, 39);
+    let f: unsafe extern "system" fn(*mut c_void, u32, u64) = std::mem::transmute(f);
+    f(inner, idx, va)
+}
+unsafe extern "system" fn cl_set_gfx_srv(obj: *mut c_void, idx: u32, va: u64) {
+    super::gfx_pso::set_root_view(obj, false, idx, va);
+}
+unsafe extern "system" fn cl_set_cs_uav(obj: *mut c_void, idx: u32, va: u64) {
+    super::gfx_pso::set_root_view(obj, true, idx, va);
+    let (inner, f) = inner_fn(obj, 41);
+    let f: unsafe extern "system" fn(*mut c_void, u32, u64) = std::mem::transmute(f);
+    f(inner, idx, va)
+}
+unsafe extern "system" fn cl_set_gfx_uav(obj: *mut c_void, idx: u32, va: u64) {
+    super::gfx_pso::set_root_view(obj, false, idx, va);
+}
+unsafe extern "system" fn cl_set_ib(obj: *mut c_void, view: *const super::gfx_pso::IbView) {
+    super::gfx_pso::set_ib(obj, if view.is_null() { None } else { Some(*view) });
+}
+unsafe extern "system" fn cl_set_vbs(obj: *mut c_void, start: u32, n: u32, views: *const super::gfx_pso::VbView) {
+    if !views.is_null() && n <= 32 {
+        super::gfx_pso::set_vbs(obj, start, std::slice::from_raw_parts(views, n as usize));
+    }
 }
 
 /// Slot 15: CopyBufferRegion(dst, dstOff, src, srcOff, bytes) — mirrored buffers use their twin.

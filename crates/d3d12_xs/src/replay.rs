@@ -121,6 +121,12 @@ pub(crate) unsafe fn set_heaps(obj: *mut c_void, n: u32, heaps: *const *mut c_vo
 }
 
 /// New recording: nothing pending, no root signatures bound.
+static PSO_STATE: Mutex<BTreeMap<usize, u8>> = Mutex::new(BTreeMap::new());
+/// List Reset with initial PSO `pso` (already unwrapped).
+pub(crate) unsafe fn note_reset_pso(obj: *mut c_void, pso: *mut c_void) {
+    let st = if pso.is_null() { 0 } else if pso as usize == unwrap_pso(super::pso_fallback_raw() as *mut c_void) as usize { 1 } else { 2 };
+    PSO_STATE.lock().unwrap().insert(obj as usize, st);
+}
 pub(crate) unsafe fn reset_state(obj: *mut c_void) {
     put(obj, T_FLUSH, 0usize);
     put(obj, T_GRS, 0usize);
@@ -154,7 +160,9 @@ fn buf_bytes(va: u64) -> u32 {
         }
         _ => {
             BIND_KIND[4].fetch_add(1, Ordering::Relaxed);
-            64 << 20
+            // Not in a PC buffer: the caller binds a null view. A guessed 64 MiB view at an unmapped
+            // address hung the GPU (887a0006) even with draws skipped.
+            0
         }
     }
 }
@@ -251,7 +259,9 @@ pub(crate) unsafe fn flush(obj: *mut c_void) {
         p = start;
     }
     let n = (wp as usize).saturating_sub(p as usize) / 4;
-    if n > 0 {
+    static NO_RPL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let no_rpl = *NO_RPL.get_or_init(|| super::pso_guard::dir().join("percy_no_replay").exists()); // debug flag: hang bisect
+    if n > 0 && !no_rpl {
         replay(obj, inner, std::slice::from_raw_parts(p as *const u32, n));
     }
     rewind(obj);
@@ -268,7 +278,13 @@ unsafe fn bad(obj: *mut c_void, w: &[u32], i: usize) {
 
 unsafe fn replay(obj: *mut c_void, inner: *mut c_void, w: &[u32]) {
     type F2 = unsafe extern "system" fn(*mut c_void, u32);
-    let mut ph = false; // bound PSO is the placeholder
+    // Debug flag percy_rpl_skip.txt: record kinds to skip (dispatch,topo,stencil,pso,vb,ib,table,const,rootva).
+    static SKIP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let skip = SKIP.get_or_init(|| std::fs::read_to_string(super::pso_guard::dir().join("percy_rpl_skip.txt")).unwrap_or_default());
+    let sk = |k: &str| skip.split(',').any(|x| x.trim() == k);
+    // Bound PSO per list across flushes: 0 none, 1 placeholder (not bound on PC), 2 real.
+    // Dispatch only with a real one: a dispatch with no PC PSO bound hung the GPU (887a0006).
+    let mut ps = PSO_STATE.lock().unwrap().get(&(obj as usize)).copied().unwrap_or(0);
     let mut i = 0;
     while i < w.len() {
         let h = w[i];
@@ -298,7 +314,7 @@ unsafe fn replay(obj: *mut c_void, inner: *mut c_void, w: &[u32]) {
             }
             0x4002_C400 => {
                 let f: unsafe extern "system" fn(*mut c_void, u32, u32, u32) = std::mem::transmute(method(inner, 14));
-                if !ph { f(inner, a[0], a[1], a[2]); }
+                if ps == 2 && !sk("dispatch") { f(inner, a[0], a[1], a[2]); }
                 STATS[1].fetch_add(1, Ordering::Relaxed);
             }
             0xC000_B600 => {
@@ -338,9 +354,11 @@ unsafe fn replay(obj: *mut c_void, inner: *mut c_void, w: &[u32]) {
                     }
                 }
                 let f: unsafe extern "system" fn(*mut c_void, *mut c_void) = std::mem::transmute(method(inner, 25));
-                ph = pso == unwrap_pso(super::pso_fallback_raw() as *mut c_void) as usize;
+                let ph = pso == unwrap_pso(super::pso_fallback_raw() as *mut c_void) as usize;
+                ps = if ph { 1 } else { 2 };
+                PSO_STATE.lock().unwrap().insert(obj as usize, ps);
                 // shortcut: placeholder work is meaningless; binding it faulted NVIDIA (null+8). Skip until shaders translate.
-                if !ph { f(inner, pso as *mut c_void); }
+                if !ph && !sk("pso") { f(inner, pso as *mut c_void); }
                 STATS[2].fetch_add(1, Ordering::Relaxed);
             }
             _ if h & 0xFF00_FF00 == 0x4000_C600 => {
@@ -350,18 +368,20 @@ unsafe fn replay(obj: *mut c_void, inner: *mut c_void, w: &[u32]) {
                         let v = c[0] as u64 | (c[1] as u64) << 32;
                         let va = v & 0xFFFF_FFFF_FFFF;
                         let size = if va == 0 { 0 } else { buf_bytes(va) };
-                        [va as u32, (va >> 32) as u32, size, (v >> 48) as u32]
+                        if size == 0 { [0, 0, 0, (v >> 48) as u32] } else { [va as u32, (va >> 32) as u32, size, (v >> 48) as u32] }
                     })
                     .collect();
                 let f: unsafe extern "system" fn(*mut c_void, u32, u32, *const [u32; 4]) = std::mem::transmute(method(inner, 44));
-                f(inner, h & 0xFF, views.len() as u32, views.as_ptr());
+                if !sk("vb") { f(inner, h & 0xFF, views.len() as u32, views.as_ptr()); }
                 STATS[3].fetch_add(1, Ordering::Relaxed);
             }
             _ if h & 0xFFFF_FF00 == 0x4001_B700 => {
                 let va = q(0);
-                let view = [va as u32, (va >> 32) as u32, if va == 0 { 0 } else { buf_bytes(va) }, h & 0xFF];
+                let size = if va == 0 { 0 } else { buf_bytes(va) };
+                let va = if size == 0 { 0 } else { va };
+                let view = [va as u32, (va >> 32) as u32, size, h & 0xFF];
                 let f: unsafe extern "system" fn(*mut c_void, *const [u32; 4]) = std::mem::transmute(method(inner, 43));
-                f(inner, if va == 0 { std::ptr::null() } else { &view });
+                if !sk("ib") { f(inner, if va == 0 { std::ptr::null() } else { &view }); }
                 STATS[4].fetch_add(1, Ordering::Relaxed);
             }
             _ if h >> 30 == 3 => {
@@ -382,15 +402,15 @@ unsafe fn replay(obj: *mut c_void, inner: *mut c_void, w: &[u32]) {
                             hnd += 1 << 32;
                         }
                         let f: unsafe extern "system" fn(*mut c_void, u32, u64) = std::mem::transmute(method(inner, 31 + gfx));
-                        f(inner, idx as u32, hnd);
+                        if !sk("table") { f(inner, idx as u32, hnd); }
                     }
                     1 => {
                         let f: unsafe extern "system" fn(*mut c_void, u32, u32, *const u32, u32) = std::mem::transmute(method(inner, 35 + gfx));
-                        f(inner, idx as u32, a.len() as u32, a.as_ptr(), off);
+                        if !sk("const") { f(inner, idx as u32, a.len() as u32, a.as_ptr(), off); }
                     }
                     k @ 2..=4 => {
                         let f: unsafe extern "system" fn(*mut c_void, u32, u64) = std::mem::transmute(method(inner, 37 + 2 * (k as usize - 2) + gfx));
-                        f(inner, idx as u32, q(0));
+                        if !sk("rootva") { f(inner, idx as u32, q(0)); }
                     }
                     _ => {}
                 }

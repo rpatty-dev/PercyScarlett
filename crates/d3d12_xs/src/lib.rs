@@ -1,4 +1,8 @@
 pub mod compute_exec;
+mod desc_mirror;
+pub mod dxbc_xbox;
+mod gfx_pso;
+pub mod hlsl_xbox;
 pub mod rdna2_hlsl;
 pub mod rdna2_isa;
 
@@ -171,6 +175,11 @@ fn load_dxcompiler() -> Option<usize> {
                 candidates.push(std::path::PathBuf::from(p));
             }
         }
+        // Preload dxil.dll from the shim dir so dxcompiler.dll signs DXIL containers in-process.
+        if let Ok(cs) = CString::new(pso_guard::dir().join("dxil.dll").to_string_lossy().as_bytes()) {
+            let _ = LoadLibraryA(cs.as_ptr());
+        }
+        candidates.push(pso_guard::dir().join("dxcompiler.dll"));
         if let Ok(exe) = std::env::current_exe() {
             let mut cur = exe.parent();
             for _ in 0..4 {
@@ -203,7 +212,9 @@ pub fn compile_hlsl_to_dxil(hlsl: &str, stage: rdna2_hlsl::ShaderStage) -> Resul
     let target_str = stage.dxil_target();
     let cache_key = format!("{target_str}:{hlsl}");
     if let Some(cached) = cache_load_blob("dxil", cache_key.as_bytes()) {
-        return Ok(cached);
+        if cached.len() >= 20 && cached[4..20].iter().any(|&b| b != 0) {
+            return Ok(cached);
+        }
     }
 
     #[repr(C)]
@@ -934,7 +945,10 @@ unsafe extern "system" fn devx_get_resource_allocation_info(ret: *mut c_void, th
     // Console-only flag bits make the PC runtime report SizeInBytes = UINT64_MAX.
     let clean: Vec<[u64; 7]> = (0..n as usize).map(|i| sanitize_resource_desc((descs as *const u8).add(i * 56))).collect();
     let mut clean = clean;
+    pso_guard::install_veh();
+    if let Some(d) = clean.first() { pso_guard::ALLOC_DESC.with(|c| c.set(*d)); }
     f(inner, ret, mask, n, if descs.is_null() { descs } else { clean.as_ptr() as *const c_void });
+    pso_guard::ALLOC_DESC.with(|c| c.set([0; 7]));
     let r = ret as *const u64;
     if n > 0 && *r == u64::MAX {
         // Small-alignment requests the PC runtime rejects: let it choose (Alignment = 0).
@@ -946,7 +960,7 @@ unsafe extern "system" fn devx_get_resource_allocation_info(ret: *mut c_void, th
         f(inner, ret, mask, n, clean.as_ptr() as *const c_void);
         static RL: AtomicU32 = AtomicU32::new(0);
         if RL.fetch_add(1, Ordering::Relaxed) < 4 {
-            log_d3d12(&format!("[d3d12x] AllocInfo retry align {a0:#x}->0 layout={l0:#x} samples={:#x} -> size={:#x}", clean[0][5] as u32, *r));
+            log_d3d12(&format!("[d3d12x] AllocInfo retry align {a0:#x}->0 layout={l0:#x} samples={} fmt={} -> size={:#x}", (clean[0][4] >> 32) as u32, clean[0][4] as u32, *r));
         }
     }
     static AI_N: AtomicU32 = AtomicU32::new(0);
@@ -994,7 +1008,21 @@ unsafe fn patch_object(obj: *mut c_void, n_slots: usize, overrides: &[(usize, us
     let newv = match v.iter().find(|&&(o, _)| o == orig) {
         Some(&(_, n)) => n,
         None => {
-            let mut tbl: Vec<usize> = std::slice::from_raw_parts(orig as *const usize, n_slots).to_vec();
+            #[repr(C)]
+            struct Mbi { base: usize, alloc_base: usize, alloc_prot: u32, part: u16, size: usize, state: u32, prot: u32, ty: u32 }
+            extern "system" { fn VirtualQuery(p: usize, m: *mut Mbi, n: usize) -> usize; }
+            let mut m: Mbi = std::mem::zeroed();
+            let avail = if VirtualQuery(orig, &mut m, std::mem::size_of::<Mbi>()) != 0 && m.state == 0x1000 {
+                (m.base + m.size).saturating_sub(orig) / std::mem::size_of::<usize>()
+            } else {
+                n_slots
+            };
+            // Preserve internal D3D12Core virtual slots (e.g. CResource::FinalRelease calls vtable[18] / +0x90).
+            let copy_n = n_slots.max(64).min(avail);
+            let mut tbl: Vec<usize> = std::slice::from_raw_parts(orig as *const usize, copy_n).to_vec();
+            if tbl.len() < n_slots {
+                tbl.resize(n_slots, 0);
+            }
             let mut origs = OBJ_ORIG.lock().unwrap();
             for &(slot, f) in overrides {
                 origs.push((0, slot, tbl[slot]));
@@ -1034,15 +1062,43 @@ unsafe extern "system" fn res_map(this: *mut c_void, sub: u32, range: *const c_v
     }
     if hr >= 0 && !out.is_null() {
         static N: AtomicU32 = AtomicU32::new(0);
-        if N.fetch_add(1, Ordering::Relaxed) < 400 {
-            let get_desc: unsafe extern "system" fn(*mut c_void, *mut [u64; 7]) -> *mut [u64; 7] = std::mem::transmute(orig_slot(this, 10));
-            let mut d = [0u64; 7];
-            get_desc(this, &mut d);
-            log_d3d12(&format!("[d3d12x] Map real {:p} w={:#x} dim={}", *out, d[2], d[0] as u32));
+        static TN: AtomicU32 = AtomicU32::new(0);
+        let get_desc: unsafe extern "system" fn(*mut c_void, *mut [u64; 7]) -> *mut [u64; 7] = std::mem::transmute(orig_slot(this, 10));
+        let mut d = [0u64; 7];
+        get_desc(this, &mut d);
+        let dim = d[0] as u32;
+        if (dim != 1 && TN.fetch_add(1, Ordering::Relaxed) < 32) || N.fetch_add(1, Ordering::Relaxed) < 16 {
+            log_d3d12(&format!("[d3d12x] Map real {:p} w={:#x} h={} fmt={} dim={dim}", *out, d[2], d[3] as u32, d[4] as u32));
         }
     }
     if hr >= 0 || out.is_null() {
         return hr;
+    }
+    // PlacedResourceX textures already have a console CPU VA: return it directly on Map() ONLY if
+    // the pages are committed and writable (otherwise fall through to a writable shadow buffer).
+    if sub == 0 {
+        if let Some(pt) = desc_mirror::placed_tex_info(this) {
+            if pt.cpu_va != 0 {
+                #[repr(C)]
+                struct Mbi { base: usize, alloc: usize, ap: u32, part: u16, sz: usize, st: u32, pr: u32, ty: u32 }
+                extern "system" { fn VirtualQuery(p: usize, m: *mut Mbi, n: usize) -> usize; }
+                let mut m: Mbi = std::mem::zeroed();
+                let ok = VirtualQuery(pt.cpu_va as usize, &mut m, std::mem::size_of::<Mbi>()) != 0
+                    && m.st == 0x1000
+                    && (m.pr & 0xCC) != 0;
+                static PTN: AtomicU32 = AtomicU32::new(0);
+                if PTN.fetch_add(1, Ordering::Relaxed) < 32 || !ok {
+                    log_d3d12(&format!(
+                        "[d3d12x] Map placed tex {this:p} va={:#x} {}x{} fmt={} ok={ok} st={:#x} pr={:#x}",
+                        pt.cpu_va, pt.width, pt.height, pt.fmt, m.st, m.pr
+                    ));
+                }
+                if ok {
+                    *out = pt.cpu_va as *mut c_void;
+                    return 0;
+                }
+            }
+        }
     }
     // Size via the real GetDesc (PC ABI) + device GetResourceAllocationInfo would need the device;
     // a generous bound from the desc suffices for a write sink.
@@ -1085,6 +1141,7 @@ unsafe extern "system" fn res_map(this: *mut c_void, sub: u32, range: *const c_v
         return hr;
     }
     log_d3d12(&format!("[d3d12x] Map shadow {p:p}+{bytes:#x} dim={} w={} h={} da={} mips={} fmt={} fl={:#x}", d[0] as u32, d[2], d[3] as u32, (d[3] >> 32) as u16, (d[3] >> 48) as u16, d[4] as u32, d[6] as u32));
+    desc_mirror::set_placed_tex_cpu_va(this, p as u64);
     sm.push((this as usize, p as usize, bytes, d));
     *out = p;
     0
@@ -1157,8 +1214,30 @@ ra_tramp!(heap_get_desc, heap_get_desc_d);
 ra_tramp!(heap_cpu_start, heap_cpu_start_d);
 ra_tramp!(heap_gpu_start, heap_gpu_start_d);
 
-/// ID3D12Resource slot 11: GetGPUVirtualAddress — a mirrored buffer answers with its VRAM twin.
-unsafe extern "system" fn res_gpu_va(this: *mut c_void) -> u64 {
+/// ID3D12Resource slot 11: GetGPUVirtualAddress — a mirrored buffer answers with its VRAM twin,
+/// and for guest callers a placed texture answers with its console CPU/GPU VA (PC D3D12 returns 0).
+unsafe extern "system" fn res_gpu_va_d(this: *mut c_void, _unused: *mut c_void, ra: usize) -> u64 {
+    if let Some(va) = mirror::gpu_va(this) {
+        return va;
+    }
+    if let Some(pt) = desc_mirror::placed_tex_info(this) {
+        let guest = caller_is_guest(ra);
+        static TN: AtomicU32 = AtomicU32::new(0);
+        if TN.fetch_add(1, Ordering::Relaxed) < 16 {
+            log_d3d12(&format!(
+                "[d3d12x] res_gpu_va on placed tex {this:p} va={:#x} {}x{} fmt={} guest={guest} ra=G+{:x}",
+                pt.cpu_va, pt.width, pt.height, pt.fmt, ra.wrapping_sub(0x1_4000_0000)
+            ));
+        }
+        if guest {
+            return pt.cpu_va;
+        }
+    }
+    let f: unsafe extern "system" fn(*mut c_void) -> u64 = std::mem::transmute(orig_slot(this, 11));
+    f(this) + va_delta(this)
+}
+ra_tramp!(res_gpu_va_tramp, res_gpu_va_d);
+unsafe fn res_gpu_va(this: *mut c_void) -> u64 {
     if let Some(va) = mirror::gpu_va(this) {
         return va;
     }
@@ -1182,68 +1261,217 @@ fn va_delta(r: *mut c_void) -> u64 {
 static PLACED_HEAPS: Mutex<Vec<(usize, usize, usize, usize)>> = Mutex::new(Vec::new()); // (heap, addr, size, real)
 
 fn placed_title_start(heap: *mut c_void) -> Option<usize> {
-    PLACED_HEAPS.lock().unwrap().iter().find(|p| p.0 == heap as usize).map(|p| p.1)
+    desc_mirror::title_start_of(heap)
 }
 
 pub(crate) fn xlate_cpu(h: usize) -> usize {
-    PLACED_HEAPS.lock().unwrap().iter().find(|p| h >= p.1 && h < p.1 + p.2).map(|p| p.3 + (h - p.1)).unwrap_or(h)
+    desc_mirror::xlate_cpu(h)
 }
 
 unsafe extern "system" fn devx_create_cbv(this: *mut c_void, desc: *const c_void, h: usize) {
     let (inner, f) = devx_inner_fn(this, 17);
     let f: unsafe extern "system" fn(*mut c_void, *const c_void, usize) = std::mem::transmute(f);
-    // Console CBVs may be 128-byte sized or point outside any PC buffer; on PC either is an invalid
-    // call that removes the device (887a0001). Round the size to 256 within the buffer, else null.
-    // shortcut: unknown or unaligned addresses get a null CBV (reads 0) until title memory is GPU-visible.
     let mut d = [0u64; 2];
     let mut pd = std::ptr::null::<c_void>();
     if !desc.is_null() {
         d = *(desc as *const [u64; 2]);
         let (va, size) = (d[0], d[1] as u32 as u64);
+        desc_mirror::record_and_stamp(h, desc_mirror::DescRecord::Cbv { va, size: size as u32 });
         let rounded = (size + 255) & !255;
-        match replay::buf_extent(va) {
-            Some(room) if va % 256 == 0 && rounded <= room && rounded != 0 => {
+        let resolved = replay::buf_extent(va)
+            .map(|room| (va, room))
+            .or_else(|| gfx_pso::cpu_to_placed_gpu(va));
+        match resolved {
+            Some((gpu_va, room)) if gpu_va % 256 == 0 && rounded <= room && rounded != 0 => {
+                d[0] = gpu_va;
                 d[1] = rounded;
                 pd = d.as_ptr() as *const c_void;
+            }
+            _ if va != 0 && size > 0 && rounded <= (1 << 20) => {
+                if let Some(gpu_va) = gfx_pso::upload_copy(inner, va, size as usize, rounded as usize, 256) {
+                    d[0] = gpu_va;
+                    d[1] = rounded;
+                    pd = d.as_ptr() as *const c_void;
+                    static UC: AtomicU32 = AtomicU32::new(0);
+                    if UC.fetch_add(1, Ordering::Relaxed) < 10 {
+                        let fpreview: Vec<f32> = (0..(size as usize / 4).min(12))
+                            .map(|i| std::ptr::read_unaligned((va as *const f32).add(i)))
+                            .collect();
+                        log_d3d12(&format!("[d3d12x] CBV va={va:#x} size={size} h={h:#x} -> upload {gpu_va:#x} ({rounded}) f={fpreview:.2?}"));
+                    }
+                } else {
+                    static N: AtomicU32 = AtomicU32::new(0);
+                    if N.fetch_add(1, Ordering::Relaxed) < 8 { log_d3d12(&format!("[d3d12x] CBV va={va:#x} size={size} not in a PC buffer -> null")); }
+                }
             }
             _ => {
                 static N: AtomicU32 = AtomicU32::new(0);
                 if N.fetch_add(1, Ordering::Relaxed) < 8 { log_d3d12(&format!("[d3d12x] CBV va={va:#x} size={size} not in a PC buffer -> null")); }
             }
         }
+    } else {
+        desc_mirror::record_and_stamp(h, desc_mirror::DescRecord::Cbv { va: 0, size: 0 });
     }
     f(inner, pd, xlate_cpu(h))
 }
 unsafe extern "system" fn devx_create_srv(this: *mut c_void, res: *mut c_void, desc: *const c_void, h: usize) {
     let (inner, f) = devx_inner_fn(this, 18);
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *const c_void, usize) = std::mem::transmute(f);
-    f(inner, mirror::sub(res), desc, xlate_cpu(h))
+    let mut raw = [0u32; 10];
+    let raw_opt = if !desc.is_null() {
+        std::ptr::copy_nonoverlapping(desc as *const u32, raw.as_mut_ptr(), 10);
+        Some(raw)
+    } else {
+        None
+    };
+    desc_mirror::record_and_stamp(h, desc_mirror::DescRecord::Srv { res: res as usize, desc: raw_opt });
+    let d;
+    let dp = if let Some(r) = raw_opt {
+        d = desc_mirror::sanitize_srv_desc(r);
+        d.as_ptr() as *const c_void
+    } else {
+        desc
+    };
+    f(inner, mirror::sub(res), dp, xlate_cpu(h));
+    dev_watch::check_tag(inner, &format!("CreateSRV res={res:p} fmt={}", raw_opt.map(|r| r[0]).unwrap_or(0)));
 }
 unsafe extern "system" fn devx_create_uav(this: *mut c_void, res: *mut c_void, ctr: *mut c_void, desc: *const c_void, h: usize) {
     let (inner, f) = devx_inner_fn(this, 19);
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, *const c_void, usize) = std::mem::transmute(f);
-    f(inner, mirror::sub(res), mirror::sub(ctr), desc, xlate_cpu(h))
+    let mut d = [0u32; 10]; // D3D12_UNORDERED_ACCESS_VIEW_DESC = 40 B
+    let raw_opt = if !desc.is_null() {
+        std::ptr::copy_nonoverlapping(desc as *const u32, d.as_mut_ptr(), 10);
+        Some(d)
+    } else {
+        None
+    };
+    desc_mirror::record_and_stamp(h, desc_mirror::DescRecord::Uav { res: res as usize, ctr: ctr as usize, desc: raw_opt });
+    if !desc.is_null() {
+        let raw_fmt = d[0];
+        let mapped = map_console_format(raw_fmt);
+        if is_depth_resource(res) || (d[1] != 1 && matches!(raw_fmt, 118..=120 | 45 | 40 | 20 | 55)) {
+            let mut null_uav = [0u32; 10];
+            null_uav[0] = 42; // R32_UINT
+            null_uav[1] = 4;  // D3D12_UAV_DIMENSION_TEXTURE2D
+            f(inner, std::ptr::null_mut(), std::ptr::null_mut(), null_uav.as_ptr() as *const c_void, xlate_cpu(h));
+        } else {
+            d[0] = mapped;
+            f(inner, mirror::sub(res), mirror::sub(ctr), d.as_ptr() as *const c_void, xlate_cpu(h));
+        }
+    } else if is_depth_resource(res) {
+        d[0] = 42;
+        d[1] = 4; // TEXTURE2D
+        f(inner, std::ptr::null_mut(), std::ptr::null_mut(), d.as_ptr() as *const c_void, xlate_cpu(h));
+    } else {
+        f(inner, mirror::sub(res), mirror::sub(ctr), desc, xlate_cpu(h));
+    }
+    dev_watch::check_tag(inner, &format!("CreateUAV res={res:p} fmt={}", raw_opt.map(|r| r[0]).unwrap_or(0)));
 }
 unsafe extern "system" fn devx_create_rtv(this: *mut c_void, res: *mut c_void, desc: *const c_void, h: usize) {
     let (inner, f) = devx_inner_fn(this, 20);
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *const c_void, usize) = std::mem::transmute(f);
-    f(inner, res, desc, xlate_cpu(h))
+    let mut d = [0u32; 6]; // D3D12_RENDER_TARGET_VIEW_DESC = 24 B
+    let dp = if !desc.is_null() {
+        std::ptr::copy_nonoverlapping(desc as *const u32, d.as_mut_ptr(), 6);
+        d[0] = map_console_format(d[0]);
+        d.as_ptr() as *const c_void
+    } else {
+        desc
+    };
+    let xh = xlate_cpu(h);
+    desc_mirror::note_rtv(xh, res);
+    f(inner, res, dp, xh);
+    dev_watch::check_tag(inner, &format!("CreateRTV res={res:p} fmt={}", d[0]));
 }
 unsafe extern "system" fn devx_create_dsv(this: *mut c_void, res: *mut c_void, desc: *const c_void, h: usize) {
     let (inner, f) = devx_inner_fn(this, 21);
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *const c_void, usize) = std::mem::transmute(f);
-    f(inner, res, desc, xlate_cpu(h))
+    let mut d = [0u32; 6]; // D3D12_DEPTH_STENCIL_VIEW_DESC = 24 B
+    let dp = if !desc.is_null() {
+        std::ptr::copy_nonoverlapping(desc as *const u32, d.as_mut_ptr(), 6);
+        d[0] = depth_to_dsv(map_console_format(d[0]));
+        d.as_ptr() as *const c_void
+    } else {
+        desc
+    };
+    let xh = xlate_cpu(h);
+    desc_mirror::note_rtv(xh, res);
+    f(inner, res, dp, xh);
+    dev_watch::check_tag(inner, &format!("CreateDSV res={res:p} fmt={}", d[0]));
 }
 unsafe extern "system" fn devx_create_sampler(this: *mut c_void, desc: *const c_void, h: usize) {
     let (inner, f) = devx_inner_fn(this, 22);
     let f: unsafe extern "system" fn(*mut c_void, *const c_void, usize) = std::mem::transmute(f);
+    if !desc.is_null() {
+        let mut raw = [0u32; 13];
+        std::ptr::copy_nonoverlapping(desc as *const u32, raw.as_mut_ptr(), 13);
+        desc_mirror::record_and_stamp(h, desc_mirror::DescRecord::Sampler { desc: raw });
+    }
     f(inner, desc, xlate_cpu(h))
+}
+/// Console slot 70 (+0x230): CreatePlacedShaderResourceViewX(pResDesc[14], pSrvDesc[16], handle).
+unsafe extern "system" fn devx_create_placed_srv_x(this: *mut c_void, res_desc: *const u32, srv_desc: *const u32, h: usize) {
+    if res_desc.is_null() || srv_desc.is_null() {
+        return;
+    }
+    let mut rd = [0u32; 14];
+    let mut sd = [0u32; 16];
+    std::ptr::copy_nonoverlapping(res_desc, rd.as_mut_ptr(), 14);
+    std::ptr::copy_nonoverlapping(srv_desc, sd.as_mut_ptr(), 16);
+    static PN: AtomicU32 = AtomicU32::new(0);
+    if PN.fetch_add(1, Ordering::Relaxed) < 12 {
+        let addr = (sd[10] as u64) | ((sd[11] as u64) << 32);
+        log_d3d12(&format!(
+            "[d3d12x] CreatePlacedSrvX rd={:x?} sd={:x?} addr={addr:#x} h={h:#x}",
+            &rd[..12], &sd[..12],
+        ));
+    }
+    let rec = desc_mirror::DescRecord::PlacedSrv { res_desc: rd, srv_desc: sd };
+    let _id = desc_mirror::record_and_stamp(h, rec);
+    // Lazy materialization: sync_draw_slot materializes on demand when actually sampled by a draw,
+    // avoiding thousands of eager VRAM texture allocations (and 887a0001 on unrendered/unusual descs).
+    desc_mirror::invalidate_slot(h);
+}
+/// Console slot 71 (+0x238): CreatePlacedUnorderedAccessViewX(pResDesc[14], pUavDesc[16], handle).
+unsafe extern "system" fn devx_create_placed_uav_x(this: *mut c_void, res_desc: *const u32, uav_desc: *const u32, h: usize) {
+    if res_desc.is_null() || uav_desc.is_null() {
+        return;
+    }
+    let mut rd = [0u32; 14];
+    let mut ud = [0u32; 16];
+    std::ptr::copy_nonoverlapping(res_desc, rd.as_mut_ptr(), 14);
+    std::ptr::copy_nonoverlapping(uav_desc, ud.as_mut_ptr(), 16);
+    let rec = desc_mirror::DescRecord::PlacedUav { res_desc: rd, uav_desc: ud };
+    let id = desc_mirror::record_and_stamp(h, rec.clone());
+    if desc_mirror::is_shadow_slot(h) {
+        let inner = (*(this as *const DeviceXProxy)).inner;
+        let _ = desc_mirror::materialize_record(inner, xlate_cpu(h), &rec, id);
+    }
 }
 unsafe extern "system" fn devx_copy_descriptors(
     this: *mut c_void, nd: u32, ds: *const usize, dsz: *const u32, ns: u32, ss: *const usize, ssz: *const u32, ty: u32,
 ) {
     let (inner, f) = devx_inner_fn(this, 23);
     let f: unsafe extern "system" fn(*mut c_void, u32, *const usize, *const u32, u32, *const usize, *const u32, u32) = std::mem::transmute(f);
+    if ty <= 1 && !ds.is_null() && !ss.is_null() {
+        let step = if ty == 1 { 16usize } else { 32usize };
+        let mut di = 0usize;
+        let mut doff = 0u32;
+        let mut si = 0usize;
+        let mut soff = 0u32;
+        while di < nd as usize && si < ns as usize {
+            let drem = if dsz.is_null() { 1 } else { *dsz.add(di) }.saturating_sub(doff);
+            let srem = if ssz.is_null() { 1 } else { *ssz.add(si) }.saturating_sub(soff);
+            let take = drem.min(srem);
+            if take > 0 {
+                desc_mirror::copy_tags(*ds.add(di) + doff as usize * step, *ss.add(si) + soff as usize * step, take, ty);
+            }
+            doff += take;
+            soff += take;
+            if doff >= if dsz.is_null() { 1 } else { *dsz.add(di) } { di += 1; doff = 0; }
+            if soff >= if ssz.is_null() { 1 } else { *ssz.add(si) } { si += 1; soff = 0; }
+        }
+    }
     let d: Vec<usize> = (0..nd as usize).map(|i| xlate_cpu(*ds.add(i))).collect();
     let s: Vec<usize> = (0..ns as usize).map(|i| xlate_cpu(*ss.add(i))).collect();
     f(inner, nd, d.as_ptr(), dsz, ns, s.as_ptr(), ssz, ty)
@@ -1251,11 +1479,12 @@ unsafe extern "system" fn devx_copy_descriptors(
 unsafe extern "system" fn devx_copy_descriptors_simple(this: *mut c_void, n: u32, d: usize, s: usize, ty: u32) {
     let (inner, f) = devx_inner_fn(this, 24);
     let f: unsafe extern "system" fn(*mut c_void, u32, usize, usize, u32) = std::mem::transmute(f);
+    desc_mirror::copy_tags(d, s, n, ty);
     f(inner, n, xlate_cpu(d), xlate_cpu(s), ty)
 }
 
 unsafe fn patch_resource(r: *mut c_void) {
-    patch_object(r, 16, &[(8, res_map as usize), (9, res_unmap as usize), (10, res_get_desc as usize), (11, res_gpu_va as usize)]);
+    patch_object(r, 16, &[(8, res_map as usize), (9, res_unmap as usize), (10, res_get_desc as usize), (11, res_gpu_va_tramp as usize)]);
 }
 
 /// Slot 14: CreateDescriptorHeap(desc, riid, out) — patch struct-returning heap methods.
@@ -1263,34 +1492,49 @@ unsafe extern "system" fn devx_create_descriptor_heap(this: *mut c_void, desc: *
     let (inner, f) = devx_inner_fn(this, 14);
     let f: unsafe extern "system" fn(*mut c_void, *const c_void, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(f);
     let mut hr = f(inner, desc, riid, out);
+    let mut clamped = false;
     if hr < 0 && !desc.is_null() && *(desc as *const u32) == 0 && *(desc as *const u32).add(2) & 1 != 0 {
-        // Shader-visible CBV/SRV/UAV heaps cap at 1,000,000 on PC (console allows more).
+        // Shader-visible CBV/SRV/UAV heaps cap at 1,000,000 on PC Tier 1/2 (Tier 3 allows more).
         let mut d = *(desc as *const [u32; 4]);
         d[1] = d[1].min(1_000_000);
         d[3] = 0;
         hr = f(inner, d.as_ptr() as *const c_void, riid, out);
+        clamped = true;
         log_d3d12(&format!("[d3d12x] CreateDescriptorHeap clamp n={} -> {:08x}", d[1], hr as u32));
     }
     if !desc.is_null() {
         let d = desc as *const u32;
         log_d3d12(&format!("[d3d12x] CreateDescriptorHeap type={} n={} flags={:#x} node={} -> {:08x}", *d, *d.add(1), *d.add(2), *d.add(3), hr as u32));
     }
-    if hr >= 0 && !out.is_null() {
+    if hr >= 0 && !out.is_null() && !desc.is_null() {
         patch_object(*out, 12, &[(8, heap_get_desc as usize), (9, heap_cpu_start as usize), (10, heap_gpu_start as usize)]);
         let addr = *((desc as *const u8).add(16) as *const usize);
         let size = *((desc as *const u8).add(24) as *const usize);
         // Only a console 32-byte desc carries {addr, size}; validate size == count * increment.
-        let (ty, n) = (*(desc as *const u32), *(desc as *const u32).add(1));
+        let (ty, n, flags) = (*(desc as *const u32), *(desc as *const u32).add(1), *(desc as *const u32).add(2));
         let (dinner, dinc) = devx_inner_fn(this, 15);
         let inc_f: unsafe extern "system" fn(*mut c_void, u32) -> u32 = std::mem::transmute(dinc);
-        let expect = n as usize * inc_f(dinner, ty) as usize;
+        let inc = inc_f(dinner, ty);
+        if (flags & 1) != 0 && ty <= 1 {
+            let fg: unsafe extern "system" fn(*mut c_void, *mut u64) -> *mut u64 = std::mem::transmute(orig_slot(*out, 10));
+            let mut gpu = 0u64;
+            fg(*out, &mut gpu);
+            gfx_pso::note_heap(*out, ty, gpu, inc);
+        }
+        let expect = n as usize * inc as usize;
+        let fcpu: unsafe extern "system" fn(*mut c_void, *mut u64) -> *mut u64 = std::mem::transmute(orig_slot(*out, 9));
+        let mut real = 0u64;
+        fcpu(*out, &mut real);
         if addr > 0x10000 && size != 0 && size == expect {
-            // Real CPU start via the original slot 9 (PC ABI: this, out*).
-            let f: unsafe extern "system" fn(*mut c_void, *mut u64) -> *mut u64 = std::mem::transmute(orig_slot(*out, 9));
-            let mut real = 0u64;
-            f(*out, &mut real);
-            PLACED_HEAPS.lock().unwrap().push((*out as usize, addr, size, real as usize));
-            log_d3d12(&format!("[d3d12x] DescriptorHeap placed at title {addr:#x}+{size:#x} -> host {real:#x}"));
+            let cap = if clamped { (n.min(1_000_000) as usize) * inc as usize } else { size };
+            desc_mirror::register_heap(*out, addr, cap, real as usize, ty, inc);
+            log_d3d12(&format!("[d3d12x] DescriptorHeap placed at title {addr:#x}+{cap:#x} -> host {real:#x}"));
+        } else if (flags & 1) == 0 && ty <= 1 && expect > 0 && expect <= (64 << 20) {
+            extern "system" { fn VirtualAlloc(a: *mut c_void, s: usize, t: u32, p: u32) -> *mut c_void; }
+            let sh = VirtualAlloc(std::ptr::null_mut(), expect, 0x3000, 0x04);
+            if !sh.is_null() {
+                desc_mirror::register_heap(*out, sh as usize, expect, real as usize, ty, inc);
+            }
         }
     }
     hr
@@ -1347,6 +1591,8 @@ unsafe extern "system" fn devx_create_committed_resource(
         }
         log_d3d12(&format!("[d3d12x] UMA buffer fallback failed {:08x}/{:08x}; using DEFAULT", hr as u32, hr2 as u32));
     }
+    let mut cv = [0u32; 5];
+    let clear = sanitize_clear_value(clear, &mut cv);
     let hr = f(inner, props, flags, desc, state, clear, riid, out);
     if hr >= 0 && !out.is_null() {
         patch_resource(*out);
@@ -1392,6 +1638,8 @@ unsafe extern "system" fn devx_create_placed_resource(
         ));
     }
     let pc_desc = sanitize_resource_desc(desc);
+    let mut cv = [0u32; 5];
+    let clear = sanitize_clear_value(clear, &mut cv);
     let hr = f(inner, heap, offset, pc_desc.as_ptr() as *const u8, state, clear, riid, out);
     if hr >= 0 && !out.is_null() {
         patch_resource(*out);
@@ -1421,15 +1669,71 @@ unsafe extern "system" fn devx_create_placed_resource_x(
     const IID_DEVICE3: [u8; 16] = [0x15, 0xdc, 0xda, 0x81, 0xad, 0x2b, 0x92, 0x43, 0x93, 0xc5, 0x10, 0x13, 0x45, 0xc4, 0xaa, 0x98];
     const IID_HEAP: [u8; 16] = [0x02, 0x25, 0x3b, 0x6b, 0x51, 0x6e, 0xb3, 0x45, 0x90, 0xee, 0x98, 0x84, 0x26, 0x5e, 0x8d, 0xf3];
     let inner = (*(this as *const DeviceXProxy)).inner;
-    let mut m: Mbi = std::mem::zeroed();
-    if va == 0 || VirtualQuery(va, &mut m, std::mem::size_of::<Mbi>()) == 0 || m.state != 0x1000 {
-        log_d3d12(&format!("[d3d12x] PlacedResourceX va={va:#x} not committed"));
+    if va == 0 || desc.is_null() || out.is_null() {
         return 0x8007_0057u32 as i32;
     }
-    let base = m.alloc_base;
-    let mut heap = HEAPS.lock().unwrap().iter().find(|h| h.0 == base).map(|h| h.1).unwrap_or(0);
-    let mut hr = 0;
-    if heap == 0 {
+    let mut pc_desc = sanitize_resource_desc(desc);
+    let mut cv = [0u32; 5];
+    let clear = sanitize_clear_value(clear, &mut cv);
+    if pc_desc[0] as u32 != 1 {
+        // Textures can't live on cross-adapter (address-backed) heaps, and console streaming textures
+        // are often placed at MEM_RESERVE VAs before XMemMapPhysicalPages commits their pages.
+        let (cinner, cf) = devx_inner_fn(this, 27);
+        let cf: unsafe extern "system" fn(*mut c_void, *const u32, u32, *const u8, u32, *const c_void, *const c_void, *mut *mut c_void) -> i32 =
+            std::mem::transmute(cf);
+        let props = [1u32, 0, 0, 1, 1];
+        pc_desc[1] = 0;
+        let mut hr = cf(cinner, props.as_ptr(), 0, pc_desc.as_ptr() as *const u8, 0, clear, riid, out);
+        if hr < 0 {
+            hr = cf(cinner, props.as_ptr(), 0, pc_desc.as_ptr() as *const u8, 0, std::ptr::null(), riid, out);
+        }
+        static TN: AtomicU32 = AtomicU32::new(0);
+        if TN.fetch_add(1, Ordering::Relaxed) < 6 || hr < 0 {
+            log_d3d12(&format!(
+                "[d3d12x] PlacedResourceX texture va={va:#x} dim={} w={} h={} da={} mips={} fmt={} s={} fl={:#x} -> committed {:08x}",
+                pc_desc[0] as u32, pc_desc[2], pc_desc[3] as u32, (pc_desc[3] >> 32) as u16, (pc_desc[3] >> 48) as u16,
+                pc_desc[4] as u32, (pc_desc[4] >> 32) as u32, pc_desc[6] as u32, hr as u32
+            ));
+        }
+        {
+            static CNT: AtomicU32 = AtomicU32::new(0);
+            static MB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let (w, h, d) = (pc_desc[2], pc_desc[3] & 0xffff_ffff, ((pc_desc[3] >> 32) & 0xffff).max(1));
+            let mb = MB.fetch_add(w * h * d * 4 * 4 / 3 >> 20, Ordering::Relaxed) + (w * h * d * 4 * 4 / 3 >> 20);
+            let n = CNT.fetch_add(1, Ordering::Relaxed) + 1;
+            if n.is_power_of_two() { log_d3d12(&format!("[vram] placed textures committed: {n}, ~{mb} MiB")); }
+        }
+        if hr >= 0 && !(*out).is_null() {
+            patch_resource(*out);
+            let clayout = std::ptr::read_unaligned(desc.add(44) as *const u32);
+            desc_mirror::note_placed_tex(desc_mirror::PlacedTexInfo {
+                res: *out as usize,
+                cpu_va: va as u64,
+                width: pc_desc[2],
+                height: pc_desc[3] as u32,
+                depth_array: ((pc_desc[3] >> 32) & 0xFFFF) as u16,
+                mips: ((pc_desc[3] >> 48) & 0xFFFF) as u16,
+                fmt: pc_desc[4] as u32,
+                console_layout: clayout,
+                flags: pc_desc[6] as u32,
+            });
+        }
+        dev_watch::check_tag(inner, &format!("PlacedResourceX tex va={va:#x} {}x{} fmt={} fl={:#x} hr={:08x}", pc_desc[2], pc_desc[3] as u32, pc_desc[4] as u32, pc_desc[6] as u32, hr as u32));
+        return hr;
+    }
+
+    // Buffers: try OpenExistingHeapFromAddress when the allocation is committed; otherwise fall back
+    // to a committed UMA/DEFAULT buffer so sparse/placeholder streaming buffers never fail with 80070057.
+    let mut m: Mbi = std::mem::zeroed();
+    let committed = VirtualQuery(va, &mut m, std::mem::size_of::<Mbi>()) != 0 && m.state == 0x1000;
+    let base = if committed { m.alloc_base } else { 0 };
+    let mut heap = if base != 0 {
+        HEAPS.lock().unwrap().iter().find(|h| h.0 == base).map(|h| h.1).unwrap_or(0)
+    } else {
+        0
+    };
+    let mut hr = 0i32;
+    if committed && heap == 0 {
         let vt = *(inner as *const *const *const c_void);
         let qi: unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(*vt.add(0));
         let mut d3: *mut c_void = std::ptr::null_mut();
@@ -1445,7 +1749,6 @@ unsafe extern "system" fn devx_create_placed_resource_x(
                 heap = h as usize;
                 HEAPS.lock().unwrap().push((base, heap));
             }
-            // allocation size: walk the regions sharing this allocation base
             let mut sz = 0usize;
             let mut q: Mbi = std::mem::zeroed();
             let mut com = 0usize;
@@ -1453,56 +1756,58 @@ unsafe extern "system" fn devx_create_placed_resource_x(
             log_d3d12(&format!("[d3d12x] heap open base={base:#x} size={:#x} ({} MiB, {} MiB committed) for va={va:#x} -> {:08x}", sz, sz >> 20, com >> 20, hr as u32));
         }
     }
-    let is_buffer = !desc.is_null() && *(desc as *const u32) == 1;
-    if heap == 0 && is_buffer {
-        log_d3d12(&format!("[d3d12x] PlacedResourceX va={va:#x} base={base:#x} heap open failed {:08x}", hr as u32));
+    if heap == 0 {
+        let (cinner, cf) = devx_inner_fn(this, 27);
+        let cf: unsafe extern "system" fn(*mut c_void, *const u32, u32, *const u8, u32, *const c_void, *const c_void, *mut *mut c_void) -> i32 =
+            std::mem::transmute(cf);
+        let orig_w = pc_desc[2];
+        pc_desc[1] = 0;
+        pc_desc[2] = (pc_desc[2].max(256) + 0xFFFF) & !0xFFFF;
+        pc_desc[6] &= !0x10; // clear ALLOW_CROSS_ADAPTER
+        let uma = [4u32, 2, 1, 1, 1];
+        hr = cf(cinner, uma.as_ptr(), 0, pc_desc.as_ptr() as *const u8, 0, std::ptr::null(), riid, out);
+        if hr < 0 {
+            let def = [1u32, 0, 0, 1, 1];
+            hr = cf(cinner, def.as_ptr(), 0, pc_desc.as_ptr() as *const u8, 0, std::ptr::null(), riid, out);
+        }
+        static FN: AtomicU32 = AtomicU32::new(0);
+        let k = FN.fetch_add(1, Ordering::Relaxed);
+        if k < 8 || k.is_power_of_two() || hr < 0 {
+            log_d3d12(&format!("[d3d12x] PlacedResourceX buffer fallback va={va:#x} w={orig_w:#x} committed={committed} -> {:08x} (#{k})", hr as u32));
+        }
+        if hr >= 0 && !(*out).is_null() {
+            patch_resource(*out);
+            replay::note_buffer(*out, pc_desc[2], 3);
+            gfx_pso::note_fallback_buf(res_gpu_va(*out), orig_w, va as u64);
+        }
+        dev_watch::check_tag(inner, &format!("PlacedResourceX buf_fb va={va:#x} w={orig_w:#x} hr={:08x}", hr as u32));
         return hr;
     }
     let (inner, f) = devx_inner_fn(this, 29);
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, u64, *const u8, u32, *const c_void, *const c_void, *mut *mut c_void) -> i32 =
         std::mem::transmute(f);
-    let mut pc_desc = sanitize_resource_desc(desc);
-    if pc_desc[0] as u32 != 1 {
-        // Textures can't live on cross-adapter (address-backed) heaps: give them their own
-        // committed DEFAULT memory. Uploads reach them through copies, not the title VA.
-        let (cinner, cf) = devx_inner_fn(this, 27);
-        let cf: unsafe extern "system" fn(*mut c_void, *const u32, u32, *const u8, u32, *const c_void, *const c_void, *mut *mut c_void) -> i32 =
-            std::mem::transmute(cf);
-        let props = [1u32, 0, 0, 1, 1];
-        pc_desc[1] = 0;
-        let mut hr = cf(cinner, props.as_ptr(), 0, pc_desc.as_ptr() as *const u8, 0, clear, riid, out);
-        if hr < 0 {
-            hr = cf(cinner, props.as_ptr(), 0, pc_desc.as_ptr() as *const u8, 0, std::ptr::null(), riid, out);
-        }
-        static TN: AtomicU32 = AtomicU32::new(0);
-        if TN.fetch_add(1, Ordering::Relaxed) < 6 || hr < 0 {
-            log_d3d12(&format!("[d3d12x] PlacedResourceX texture va={va:#x} dim={} -> committed {:08x}", pc_desc[0] as u32, hr as u32));
-        }
-        if hr >= 0 && !out.is_null() {
-            patch_resource(*out);
-        }
-        return hr;
-    }
     // Heaps from OpenExistingHeapFromAddress are cross-adapter: resources need ALLOW_CROSS_ADAPTER.
     pc_desc[6] |= 0x10;
-    // Cross-adapter/system heaps accept buffers in COMMON; console passes its own state encoding.
-    let st = if pc_desc[0] as u32 == 1 { 0 } else { state };
     let off = (va - base) as u64;
     let delta = off & 0xFFFF;
     if delta != 0 {
         pc_desc[2] += delta; // widen so [va, va+w) stays covered
     }
-    hr = f(inner, heap as *mut c_void, off - delta, pc_desc.as_ptr() as *const u8, st, clear, riid, out);
-    if hr >= 0 && delta != 0 && !out.is_null() {
+    hr = f(inner, heap as *mut c_void, off - delta, pc_desc.as_ptr() as *const u8, 0, clear, riid, out);
+    if hr >= 0 && delta != 0 && !(*out).is_null() {
         VA_DELTA.lock().unwrap().push((*out as usize, delta));
     }
-    log_d3d12(&format!("[d3d12x] PlacedResourceX va={va:#x} off={:#x} dim={} w={:#x} state={state:#x} -> {:08x}", va - base, pc_desc[0] as u32, pc_desc[2], hr as u32));
-    if hr >= 0 && !out.is_null() {
-        patch_resource(*out);
-        if pc_desc[0] as u32 == 1 {
-            replay::note_buffer(*out, pc_desc[2], 3);
-        }
+    static BN: AtomicU32 = AtomicU32::new(0);
+    let bk = BN.fetch_add(1, Ordering::Relaxed);
+    if bk < 16 || bk.is_power_of_two() || hr < 0 {
+        log_d3d12(&format!("[d3d12x] PlacedResourceX va={va:#x} off={:#x} dim=1 w={:#x} state={state:#x} -> {:08x} (#{bk})", va - base, pc_desc[2], hr as u32));
     }
+    if hr >= 0 && !(*out).is_null() {
+        patch_resource(*out);
+        replay::note_buffer(*out, pc_desc[2], 3);
+        gfx_pso::note_placed_buf(va as u64, pc_desc[2].saturating_sub(delta), res_gpu_va(*out));
+    }
+    dev_watch::check_tag(inner, &format!("PlacedResourceX buf_heap va={va:#x} off={:#x} w={:#x} hr={:08x}", va - base, pc_desc[2], hr as u32));
     hr
 }
 
@@ -1689,6 +1994,16 @@ mod dev_watch {
             log_d3d12(&format!("[devwatch] device removed {:08x} right after slot {slot} args=({:#x},{:#x},{:#x},{:#x},{:#x}) -> {r:#x} from G+{:x}", x as u32, a[0], a[1], a[2], a[3], a[4], guest_ra().wrapping_sub(0x1_4000_0000)));
         }
     }
+    pub(super) unsafe fn check_tag(inner: *mut c_void, tag: &str) -> bool {
+        if inner.is_null() || REMOVED_SEEN.load(Ordering::Relaxed) { return false; }
+        let rr: unsafe extern "system" fn(*mut c_void) -> i32 = std::mem::transmute(*(*(inner as *const *const usize)).add(37));
+        let x = rr(inner);
+        if x != 0 && !REMOVED_SEEN.swap(true, Ordering::Relaxed) {
+            log_d3d12(&format!("[devwatch] device removed {:08x} at {tag} from G+{:x}", x as u32, guest_ra().wrapping_sub(0x1_4000_0000)));
+            return true;
+        }
+        false
+    }
     macro_rules! lw {
         ($name:ident, $n:literal) => {
             pub(super) unsafe extern "system" fn $name(this: *mut c_void, a: usize, b: usize, c: usize, d: usize, e: usize) -> usize {
@@ -1841,11 +2156,21 @@ unsafe extern "system" fn devx_create_committed_resource3(
     let mut d = [0u8; 72];
     if !desc.is_null() {
         std::ptr::copy_nonoverlapping(desc, d.as_mut_ptr(), 68);
-        let fl = d.as_mut_ptr().add(48) as *mut u32;
-        *fl &= PC_RESOURCE_FLAGS;
+        let clean = sanitize_resource_desc(desc);
+        std::ptr::copy_nonoverlapping(clean.as_ptr() as *const u8, d.as_mut_ptr(), 56);
     }
-    let lay = if layout > 0x30 { 0 } else { layout }; // D3D12_BARRIER_LAYOUT_COMMON
+    let dim = *(d.as_ptr() as *const u32);
+    // Buffers require D3D12_BARRIER_LAYOUT_UNDEFINED (0xFFFFFFFF) in CreateCommittedResource3.
+    let lay = if dim == 1 {
+        0xFFFF_FFFF
+    } else if layout != 0xFFFF_FFFF && layout > 0x30 {
+        0
+    } else {
+        layout
+    };
     let hf = flags & 0xFFFF;
+    let mut cv = [0u32; 5];
+    let clear = sanitize_clear_value(clear, &mut cv);
     let hr = f(inner, props, hf, d.as_ptr(), lay, clear, session, ncast, cast, riid, out);
     static N: AtomicU32 = AtomicU32::new(0);
     if N.fetch_add(1, Ordering::Relaxed) < 6 || hr < 0 {
@@ -1895,67 +2220,115 @@ unsafe extern "system" fn devx_create_pso_any(this: *mut c_void, desc: *const u8
     hr
 }
 
-/// Console slot 86: CreatePipelineState({SizeInBytes, pStream}, riid, out) -> PC Device2 slot 47.
-unsafe extern "system" fn devx_create_pso_stream(this: *mut c_void, desc: *const u8, riid: *const c_void, out: *mut *mut c_void) -> i32 {
-    // Console graphics streams (shaders absent / console ISA) can crash the PC driver: placeholder.
-    if std::env::var("PERCY_PSO_STREAM_FWD").is_err() {
-        if let Some(fb) = pso_guard::fallback() {
-            *out = fb;
-            return 0;
-        }
-    }
-    let (inner, f) = devx_inner_fn(this, 47);
-    let f: unsafe extern "system" fn(*mut c_void, *const u8, *const c_void, *mut *mut c_void) -> i32 = std::mem::transmute(f);
-    let hr = f(inner, desc, riid, out);
-    if hr >= 0 && !out.is_null() {
-        *out = replay::wrap_pso(*out);
-    }
-    static DUMPED: AtomicU32 = AtomicU32::new(0);
-    if hr < 0 && DUMPED.fetch_add(1, Ordering::Relaxed) < 2 && !desc.is_null() {
-        // Dump raw stream as u32 words (subobject type tags + payload) for layout analysis.
-        let (n, p) = (*(desc as *const usize), *(desc.add(8) as *const *const u32));
-        let w: Vec<String> = (0..n / 4).map(|i| format!("{:x}", *p.add(i))).collect();
-        log_d3d12(&format!("[d3d12x] PSO-stream dump {}", w.join(" ")));
-    }
-    static N: AtomicU32 = AtomicU32::new(0);
-    if N.fetch_add(1, Ordering::Relaxed) < 8 || hr < 0 {
-        log_d3d12(&format!("[d3d12x] PSO-stream size={:#x} -> {:08x}", if desc.is_null() { 0 } else { *(desc as *const usize) }, hr as u32));
-    }
-    if hr < 0 && !out.is_null() {
-        // Placeholder so init proceeds; real shaders need the console-ISA translator.
-        if let Some(fb) = pso_guard::fallback() {
-            *out = fb;
-            return 0;
-        }
-    }
-    hr
+/// Console slot 86: CreatePipelineState({SizeInBytes, pStream}, riid, out) -> lazy LazyPso.
+unsafe extern "system" fn devx_create_pso_stream(this: *mut c_void, desc: *const u8, _riid: *const c_void, out: *mut *mut c_void) -> i32 {
+    let inner = (*(this as *const DeviceXProxy)).inner;
+    gfx_pso::create_from_stream(inner, desc, out)
 }
 
 /// PC-defined D3D12_RESOURCE_FLAGS bits (RT .. RAYTRACING_ACCELERATION_STRUCTURE).
 const PC_RESOURCE_FLAGS: u32 = 0x1FF;
-/// Copies a D3D12_RESOURCE_DESC (56 bytes) and strips console-only resource flags (e.g. 0x20000),
-/// which PC drivers reject or mis-handle.
+
+/// Maps Xbox Series (Scarlett) console-only DXGI formats to PC equivalents.
+pub(crate) fn map_console_format(fmt: u32) -> u32 {
+    match fmt {
+        86 | 115 => 28,  // B5G5R5A1 / B4G4R4A4 -> R8G8B8A8_UNORM
+        116 | 117 => 10, // R10G10B10_7E3/6E4_A2_FLOAT -> R16G16B16A16_FLOAT
+        118 => 45,       // D16_UNORM_S8_UINT -> D24_UNORM_S8_UINT
+        119 => 46,       // R16_UNORM_X8_TYPELESS -> R24_UNORM_X8_TYPELESS
+        120 => 47,       // X16_TYPELESS_G8_UINT -> X24_TYPELESS_G8_UINT
+        189 => 24,       // R10G10B10_SNORM_A2_UNORM -> R10G10B10A2_UNORM
+        190 => 49,       // R4G4_UNORM -> R8G8_UNORM
+        191 => 46,       // R24_UNORM_X8 -> R24_UNORM_X8_TYPELESS
+        f => f,
+    }
+}
+fn depth_to_typeless(fmt: u32) -> u32 {
+    match fmt {
+        45 => 44, // D24_UNORM_S8_UINT -> R24G8_TYPELESS
+        40 => 39, // D32_FLOAT -> R32_TYPELESS
+        20 => 19, // D32_FLOAT_S8X24_UINT -> R32G8X24_TYPELESS
+        55 => 53, // D16_UNORM -> R16_TYPELESS
+        f => f,
+    }
+}
+fn depth_to_srv(fmt: u32) -> u32 {
+    match fmt {
+        44 | 45 => 46, // R24_UNORM_X8_TYPELESS
+        39 | 40 => 41, // R32_FLOAT
+        19 | 20 => 21, // R32_FLOAT_X8X24_TYPELESS
+        53 | 55 => 56, // R16_UNORM
+        f => f,
+    }
+}
+pub(crate) fn depth_to_dsv(fmt: u32) -> u32 {
+    match fmt {
+        44 => 45,
+        39 => 40,
+        19 => 20,
+        53 => 55,
+        f => f,
+    }
+}
+unsafe fn is_depth_resource(res: *mut c_void) -> bool {
+    if res.is_null() {
+        return false;
+    }
+    let get_desc: unsafe extern "system" fn(*mut c_void, *mut [u64; 7]) -> *mut [u64; 7] =
+        std::mem::transmute(orig_slot(res, 10));
+    let mut d = [0u64; 7];
+    get_desc(res, &mut d);
+    (d[6] as u32) & 0x2 != 0
+}
+unsafe fn sanitize_clear_value(clear: *const c_void, buf: &mut [u32; 5]) -> *const c_void {
+    if clear.is_null() {
+        return clear;
+    }
+    std::ptr::copy_nonoverlapping(clear as *const u32, buf.as_mut_ptr(), 5);
+    buf[0] = depth_to_dsv(map_console_format(buf[0]));
+    buf.as_ptr() as *const c_void
+}
+/// Copies a D3D12_RESOURCE_DESC (56 bytes), maps console-only formats, and strips console-only
+/// resource flags/layouts which PC drivers reject or mis-handle.
 unsafe fn sanitize_resource_desc(desc: *const u8) -> [u64; 7] {
     let mut d = [0u64; 7];
     if desc.is_null() {
         return d;
     }
     std::ptr::copy_nonoverlapping(desc, d.as_mut_ptr() as *mut u8, 56);
-    // Layout (u32 @44): console swizzle modes are not PC D3D12_TEXTURE_LAYOUT values (0..3).
-    let layout = (d.as_mut_ptr() as *mut u8).add(44) as *mut u32;
-    if *layout > 3 {
+    let base = d.as_mut_ptr() as *mut u8;
+    let dim = *(base as *const u32);
+    // Format (@32): map console-only DXGI formats.
+    let fmt = base.add(32) as *mut u32;
+    *fmt = map_console_format(*fmt);
+    // SampleDesc.Count (@36): PC requires >= 1.
+    let samples = base.add(36) as *mut u32;
+    if *samples == 0 {
+        *samples = 1;
+    }
+    // Layout (@44): console swizzle modes are not PC D3D12_TEXTURE_LAYOUT values (0..3).
+    let layout = base.add(44) as *mut u32;
+    if dim == 1 {
+        *layout = 1; // D3D12_TEXTURE_LAYOUT_ROW_MAJOR
+    } else if *layout > 3 {
         *layout = 0;
     }
-    // Alignment: PC accepts 0, 4 KiB, 64 KiB, 4 MiB only.
+    // Alignment (@8): PC accepts 0, 4 KiB, 64 KiB, 4 MiB only.
     if ![0u64, 0x1000, 0x10000, 0x40_0000].contains(&d[1]) {
         d[1] = 0;
     }
-    let flags = (d.as_mut_ptr() as *mut u8).add(48) as *mut u32;
+    let flags = base.add(48) as *mut u32;
     if *flags & !PC_RESOURCE_FLAGS != 0 {
         static SN: AtomicU32 = AtomicU32::new(0);
         let k = SN.fetch_add(1, Ordering::Relaxed);
         if k < 16 || k.is_power_of_two() { log_d3d12(&format!("[d3d12x] stripped console resource flags {:#x}", *flags & !PC_RESOURCE_FLAGS)); }
         *flags &= PC_RESOURCE_FLAGS;
+    }
+    // Depth resources: PC forbids ALLOW_UNORDERED_ACCESS with ALLOW_DEPTH_STENCIL, and needs
+    // typeless formats so both DSV and SRV views succeed.
+    if *flags & 0x2 != 0 {
+        *flags &= !0x4;
+        *fmt = depth_to_typeless(*fmt);
     }
     d
 }
@@ -2116,8 +2489,7 @@ pub(crate) mod pso_guard {
     pub fn is_bad(h: u64) -> bool { h != 0 && skip().contains(&h) }
     pub fn begin(h: u64) {
         let _ = skip();
-        static V: std::sync::Once = std::sync::Once::new();
-        V.call_once(|| unsafe { super::mirror::AddVectoredExceptionHandler(1, veh); });
+        install_veh();
         CUR.with(|c| c.set(h.max(1)));
         AV.with(|c| c.set(false));
         let r = std::fs::write(dir().join("percy_pso_pending.txt"), format!("{h:016x}"));
@@ -2146,7 +2518,21 @@ pub(crate) mod pso_guard {
         static CUR: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
         static AV: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
+    pub(crate) fn install_veh() {
+        static V: std::sync::Once = std::sync::Once::new();
+        V.call_once(|| unsafe { super::mirror::AddVectoredExceptionHandler(1, veh); });
+    }
+    thread_local! {
+        /// Debug: desc being sized by GetResourceAllocationInfo (logged if D3D12Core faults on it).
+        pub(crate) static ALLOC_DESC: std::cell::Cell<[u64; 7]> = const { std::cell::Cell::new([0; 7]) };
+    }
     unsafe extern "system" fn veh(info: *const c_void) -> i32 {
+        if **(info as *const *const u32) == 0xC000_0005 {
+            let d = ALLOC_DESC.with(|c| c.replace([0; 7]));
+            if d[0] != 0 {
+                log_d3d12(&format!("[allocinfo] AV on desc dim={} align={:#x} w={} h={} da={} mips={} fmt={} samples={:#x} layout={:#x} flags={:#x}", d[0] as u32, d[1], d[2], d[3] as u32, (d[3] >> 32) as u16, (d[3] >> 48) as u16, d[4] as u32, d[5] as u32, (d[5] >> 32) as u32, d[6] as u32));
+            }
+        }
         if **(info as *const *const u32) == 0xC000_0005 && CUR.with(|c| c.get()) != 0 {
             AV.with(|c| c.set(true));
         }
@@ -2576,12 +2962,58 @@ unsafe extern "system" fn queue_execute(this: *mut c_void, n: u32, lists: *const
             t == qd[0]
         })
         .collect();
+    // Debug flag percy_no_exec: never submit title lists (hang bisect).
+    static NO_EXEC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *NO_EXEC.get_or_init(|| pso_guard::dir().join("percy_no_exec").exists()) {
+        pc.clear();
+    }
+    // Debug flag percy_exec_max.txt = N: submit only the first N title submissions.
+    static EXEC_MAX: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    static EXEC_N: AtomicU32 = AtomicU32::new(0);
+    let emax = *EXEC_MAX.get_or_init(|| std::fs::read_to_string(pso_guard::dir().join("percy_exec_max.txt")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(u32::MAX));
     if !pc.is_empty() {
+        let k = EXEC_N.fetch_add(1, Ordering::Relaxed);
+        if k == 0 || k == 11 {
+            // Debug: what the title's device globals hold (raw PC device vs our proxy).
+            let g = |o: usize| { let p = *((0x1_4000_0000usize + o) as *const usize); let vt = if p > 0x10000 { *(p as *const usize) } else { 0 }; format!("{p:#x}(vt {vt:#x})") };
+            log_d3d12(&format!("[devglob] G+75df048={} G+8759d00={} proxy_vt_example={:#x}", g(0x75df048), g(0x8759d00), *(this as *const usize)));
+        }
+        if k < 12 {
+            let h: Vec<String> = (0..n as usize).map(|i| { let l = *lists.add(i); if console_list::inner_of(l).is_some() { console_list::hist_pub(l) } else { "pc".into() } }).collect();
+            log_d3d12(&format!("[sub] #{} q={:p} qtype={} lists={} objs={:?} hist=[{}] from G+{:x}", k + 1, this, qd[0], pc.len(), (0..n as usize).map(|i| *lists.add(i)).collect::<Vec<_>>(), h.join(" | "), guest_ra().wrapping_sub(0x1_4000_0000)));
+        }
+        if k >= emax { pc.clear(); }
+        // Debug flag percy_sub_drop.txt = "S:I": drop list I of submission S (1-based S).
+        if let Ok(t) = std::fs::read_to_string(pso_guard::dir().join("percy_sub_drop.txt")) {
+            if let Some((s, i)) = t.trim().split_once(':') {
+                if s.parse::<u32>().ok() == Some(k + 1) {
+                    if let Ok(i) = i.parse::<usize>() { if i < pc.len() { pc.remove(i); } }
+                }
+            }
+        }
+    }
+    if !pc.is_empty() {
+        static Q_DEV: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let mut dev_p = Q_DEV.load(Ordering::Relaxed) as *mut c_void;
+        if dev_p.is_null() {
+            const IID_DEV: [u8; 16] = [0xf1, 0x19, 0x98, 0x18, 0xb6, 0x1d, 0x57, 0x4b, 0xbe, 0x54, 0x18, 0x21, 0x33, 0x9b, 0x85, 0xf7];
+            let gd: unsafe extern "system" fn(*mut c_void, *const u8, *mut *mut c_void) -> i32 = std::mem::transmute(console_list::queue_orig(this, 7));
+            let mut d = std::ptr::null_mut();
+            if gd(this, IID_DEV.as_ptr(), &mut d) >= 0 && !d.is_null() {
+                Q_DEV.store(d as usize, Ordering::Relaxed);
+                dev_p = d;
+            }
+        }
+        dev_watch::check_tag(dev_p, &format!("before Execute qtype={} n={}", qd[0], pc.len()));
         mirror::flush(this);
         let cl = std::slice::from_raw_parts(lists, n as usize);
         cpu_writes::before_submit(cl);
         let f: unsafe extern "system" fn(*mut c_void, u32, *const *mut c_void) = std::mem::transmute(console_list::queue_orig(this, 10));
         f(this, pc.len() as u32, pc.as_mut_ptr());
+        if dev_watch::check_tag(dev_p, &format!("after Execute qtype={} n={}", qd[0], pc.len())) {
+            let h: Vec<String> = (0..n as usize).map(|i| { let l = *lists.add(i); if console_list::inner_of(l).is_some() { console_list::hist_pub(l) } else { "pc".into() } }).collect();
+            log_d3d12(&format!("[devwatch] Execute hist=[{}]", h.join(" | ")));
+        }
         cpu_writes::after_submit(this, cl);
     }
     console_list::signal_fences(this, n, lists);
@@ -2670,10 +3102,61 @@ unsafe extern "system" fn devx_create_command_list(
     log_d3d12(&format!("[d3d12x] CreateCommandList(type={ty}, node={node}) G+[{}] -> {:08x}", ras.join(" "), hr as u32));
     hr
 }
+/// The title sometimes holds the raw PC device and calls GetResourceAllocationInfo (slot 25) with
+/// the console ABI (rcx = return buffer, rdx = this) and console descs: D3D12Core then treats the
+/// buffer as `this` and calls through garbage (AV at +0). The PC vtable's slot 25 gets an adapter
+/// that tells the ABIs apart by which argument is the device.
+mod pc_alloc_info {
+    use super::*;
+    static ORIG: AtomicUsize = AtomicUsize::new(0);
+    static DEV_VT: AtomicUsize = AtomicUsize::new(0);
+    extern "system" {
+        fn VirtualProtect(a: *mut c_void, n: usize, p: u32, old: *mut u32) -> i32;
+    }
+    pub(super) unsafe fn patch(dev: *mut c_void) {
+        let vt = *(dev as *const *mut usize);
+        if DEV_VT.swap(vt as usize, Ordering::Relaxed) == vt as usize {
+            return;
+        }
+        let slot = vt.add(25);
+        if *slot == adapter as usize {
+            return;
+        }
+        let mut old = 0u32;
+        if VirtualProtect(slot as *mut c_void, 8, 0x04, &mut old) != 0 {
+            ORIG.store(*slot, Ordering::Relaxed);
+            *slot = adapter as usize;
+            VirtualProtect(slot as *mut c_void, 8, old, &mut old);
+            log_d3d12("[d3d12x] PC device slot 25 adapter installed (console-ABI GetResourceAllocationInfo)");
+        }
+    }
+    unsafe extern "system" fn adapter(a: *mut c_void, b: *mut c_void, mask: u32, n: u32, descs: *const c_void) -> *mut c_void {
+        let f: unsafe extern "system" fn(*mut c_void, *mut c_void, u32, u32, *const c_void) -> *mut c_void = std::mem::transmute(ORIG.load(Ordering::Relaxed));
+        let dvt = DEV_VT.load(Ordering::Relaxed);
+        let is_dev = |p: *mut c_void| !p.is_null() && (p as usize) & 7 == 0 && *(p as *const usize) == dvt;
+        if is_dev(a) {
+            return f(a, b, mask, n, descs); // PC ABI (this, ret, ...)
+        }
+        // console ABI (ret, this, ...): clean the descs like the proxy does
+        static N: AtomicU32 = AtomicU32::new(0);
+        if N.fetch_add(1, Ordering::Relaxed) < 4 {
+            log_d3d12(&format!("[d3d12x] raw PC device slot 25 called with console ABI n={n} from G+{:x}", guest_ra().wrapping_sub(0x1_4000_0000)));
+        }
+        let clean: Vec<[u64; 7]> = (0..n as usize).map(|i| sanitize_resource_desc((descs as *const u8).add(i * 56))).collect();
+        f(b, a, mask, n, if descs.is_null() { descs } else { clean.as_ptr() as *const c_void });
+        if n > 0 && *(a as *const u64) == u64::MAX {
+            let mut c = clean;
+            for d in c.iter_mut() { d[1] = 0; }
+            f(b, a, mask, n, c.as_ptr() as *const c_void);
+        }
+        a
+    }
+}
 unsafe fn wrap_device_pointer(inner: *mut c_void) -> *mut c_void {
     if inner.is_null() {
         return inner;
     }
+    pc_alloc_info::patch(inner);
     let mut vtbl = [xbox_slot_unimpl as *const c_void; 192];
     vtbl[0] = proxy_qi as *const c_void;
     vtbl[1] = proxy_add_ref as *const c_void;
@@ -2688,12 +3171,14 @@ unsafe fn wrap_device_pointer(inner: *mut c_void) -> *mut c_void {
     vtbl[41] = devx_create_command_signature as *const c_void;
     // Console-layout slots identified from title call sites (riid / argument shapes):
     vtbl[48] = devx_create_command_queue as *const c_void; // (desc, riid=CommandQueue, out)
-    vtbl[57] = devx_create_pso_any as *const c_void; // (desc, riid=PipelineState, out)
+    vtbl[57] = devx_notimpl as *const c_void; // precompiled PSO cache: E_NOTIMPL -> title falls back to slot 86 stream PSOs
     vtbl[67] = devx_notimpl as *const c_void; // +0x218: E_NOTIMPL -> title falls back cleanly
     vtbl[127] = devx_create_committed_resource3 as *const c_void;
     vtbl[86] = devx_create_pso_stream as *const c_void;
     vtbl[55] = devx_pso_clone_x as *const c_void; // +0x1b8 CreatePipelineStateCloneX(src, flags, desc, riid, out) // ({size, stream}, riid, out)
     vtbl[61] = devx_create_sampler as *const c_void; // (desc, handle); handle tagged sampler
+    vtbl[70] = devx_create_placed_srv_x as *const c_void; // CreatePlacedShaderResourceViewX
+    vtbl[71] = devx_create_placed_uav_x as *const c_void; // CreatePlacedUnorderedAccessViewX
     vtbl[108] = devx_get_resource_allocation_info as *const c_void; // (ret, this, mask, n, descs, info1)
     vtbl[73] = devx_create_command_list as *const c_void;
     vtbl[80] = devx_wait_frame_event as *const c_void;

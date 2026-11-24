@@ -7,3 +7,6 @@ license = "GPL-2.0-only"
 [lib]
 name = "d3d12_xs"
 crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+flate2 = "1"
