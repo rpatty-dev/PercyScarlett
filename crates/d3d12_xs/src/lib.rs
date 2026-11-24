@@ -2119,8 +2119,8 @@ unsafe extern "system" fn devx_create_fence(this: *mut c_void, init: u64, flags:
 static FRAME_INTERVAL_US: AtomicU32 = AtomicU32::new(16_667);
 /// Slot 78 (+0x270) SetFrameIntervalX(output, intervalUs, periodInIntervals, flags).
 unsafe extern "system" fn devx_set_frame_interval(_this: *mut c_void, _out: *mut c_void, us: u32, period: u32, _flags: u32) -> i32 {
-    if us >= 1000 { FRAME_INTERVAL_US.store(us, Ordering::Relaxed); }
-    log_d3d12(&format!("[d3d12x] SetFrameIntervalX {us}us period={period}"));
+    if us >= 1000 { FRAME_INTERVAL_US.store(us.min(16667), Ordering::Relaxed); }
+    log_d3d12(&format!("[d3d12x] SetFrameIntervalX {us}us (clamped {}us) period={period}", us.min(16667)));
     0
 }
 /// Slot 80 (+0x280) WaitFrameEventX(type, timeout, result, flags, *token): title passes the token on
@@ -2984,12 +2984,13 @@ unsafe extern "system" fn queue_execute(this: *mut c_void, n: u32, lists: *const
         }
         if k >= emax { pc.clear(); }
         // Debug flag percy_sub_drop.txt = "S:I": drop list I of submission S (1-based S).
-        if let Ok(t) = std::fs::read_to_string(pso_guard::dir().join("percy_sub_drop.txt")) {
-            if let Some((s, i)) = t.trim().split_once(':') {
-                if s.parse::<u32>().ok() == Some(k + 1) {
-                    if let Ok(i) = i.parse::<usize>() { if i < pc.len() { pc.remove(i); } }
-                }
-            }
+        static SUB_DROP: std::sync::OnceLock<Option<(u32, usize)>> = std::sync::OnceLock::new();
+        if let Some((s, i)) = *SUB_DROP.get_or_init(|| {
+            let t = std::fs::read_to_string(pso_guard::dir().join("percy_sub_drop.txt")).ok()?;
+            let (s, i) = t.trim().split_once(':')?;
+            Some((s.parse().ok()?, i.parse().ok()?))
+        }) {
+            if s == k + 1 && i < pc.len() { pc.remove(i); }
         }
     }
     if !pc.is_empty() {

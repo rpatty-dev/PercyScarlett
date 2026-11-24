@@ -257,9 +257,12 @@ impl Presenter {
         let trig = CAP_TRIG.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
             if v > 0 { Some(v - 1) } else { None }
         }).ok().map(|v| v == 1).unwrap_or(false);
-        let do_cap = (trig || matches!(next_n, 16 | 160 | 600 | 900 | 1200)
-            || (next_n >= 1120 && next_n < 1700 && next_n % 120 == 0)
-            || (next_n >= 1700 && next_n <= 10000 && next_n % 30 == 0))
+        static CAP_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let cap_enabled = *CAP_ON.get_or_init(|| super::pso_guard::dir().join("percy_capture.txt").exists());
+        let do_cap = cap_enabled
+            && (trig || matches!(next_n, 16 | 160 | 600 | 900 | 1200)
+                || (next_n >= 1120 && next_n < 1700 && next_n % 120 == 0)
+                || (next_n >= 1700 && next_n <= 10000 && next_n % 30 == 0))
             && matches!(self.fmt, 27 | 28 | 29 | 87 | 90 | 91);
         if do_cap {
             if self.rb_buf == 0 {
@@ -358,7 +361,7 @@ impl Presenter {
             }
         }
         let pres: unsafe extern "system" fn(*mut c_void, u32, u32) -> i32 = m(sc, 8);
-        let phr = pres(sc, 1, 0);
+        let phr = pres(sc, 0, 0);
         let n = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
         if n.is_power_of_two() || phr < 0 {
             log_d3d12(&format!("[present] frame {n} close={:08x} present={:08x}", hr as u32, phr as u32));
