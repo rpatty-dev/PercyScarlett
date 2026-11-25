@@ -50,7 +50,7 @@ The runtime in `runtime/victory` is built on VIctory, fxceless' victory-fork and
 ## TheBig6 😉: the opening prison scene
 
 1. Download `PercyScarlett_v1.0.0_runtime_Win64.zip` from the [latest release](https://github.com/rpatty-dev/PercyScarlett/releases/latest) and unzip it.
-2. Run `play.bat "D:\path	o\your\dump"` (the folder with `game_scarlett_master.exe`). Or from source: `.\scripts\play-prologue.ps1 -Game "D:\path	o\your\dump"`.
+2. Run `play.bat "D:\path\to\your\dump"` (the folder with `game_scarlett_master.exe`). Or from source: `.\scripts\play-prologue.ps1 -Game "D:\path\to\your\dump"`.
 3. Press Enter through the logos and menus. The first visit to a scene compiles its GPU pipelines, so the picture can be black or incomplete for a few minutes; later runs use the cache.
 
 | Profile | Speed (RTX 2060 SUPER 8 GB) | Notes |
