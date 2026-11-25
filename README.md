@@ -43,16 +43,24 @@ The runtime in `runtime/victory` is built on VIctory, fxceless' victory-fork and
 | Loader | Maps the title in-process: relocations, `.pdata`, guest static TLS, import routing, user-path virtualization | `src/pe_loader.rs` |
 | Graphics | D3D12.X command lists replayed onto PC D3D12, console present into a DXGI swap chain | `crates/d3d12_xs/src/{replay,console_list,present}.rs` |
 | Shaders | Minecraft ships DXIL, so its shaders run as-is. Retail RDNA2/GFX10 shaders (VS + PS) are lifted to SM 6.6 HLSL (`hlsl_xbox.rs`), compiled via DXC, and bound into live PC graphics PSOs (`gfx_pso.rs`, `desc_mirror.rs`) | `crates/d3d12_xs/src/{hlsl_xbox,dxbc_xbox,gfx_pso,desc_mirror}.rs` |
-| TheBig6 😉 | Clean-room graphics bring-up: RDNA2/GFX10 VS+PS lifted to SM 6.6 HLSL and bound into live PC graphics PSOs; renders account picker, true-color 4K Bink2 video playback, and full FTUE/setup UI flow with persistent settings, XInput gamepad support, and world streaming | `docs/TheBig6.md` |
+| TheBig6 😉 | v1.0: reaches the opening prison scene, lit and textured, on the Series S profile with an 8 GB card (about 2-3 fps on an RTX 2060 SUPER). Menus, Bink2 video, save data and world streaming work. Shaded areas are still too dark | `runtime/victory`, `docs/PROLOGUE.md` |
 
 ---
 
-## Ready for TheBig6 😉
+## TheBig6 😉: the opening prison scene
 
-Add the package folder to the **Library** before the executable is there. PercyScarlett reads `MicrosoftGame.Config`, builds and registers the identity overlay (missing store art is generated), and sets up a save folder. When the exe arrives: **Check → Launch**.
+1. Download `PercyScarlett_v1.0.0_runtime_Win64.zip` from the [latest release](https://github.com/rpatty-dev/PercyScarlett/releases/latest) and unzip it.
+2. Run `play.bat "D:\path	o\your\dump"` (the folder with `game_scarlett_master.exe`). Or from source: `.\scripts\play-prologue.ps1 -Game "D:\path	o\your\dump"`.
+3. Press Enter through the logos and menus. The first visit to a scene compiles its GPU pipelines, so the picture can be black or incomplete for a few minutes; later runs use the cache.
 
-- All shipped sidecar DLLs (Bink2Scarlett, XboxBvhBuilder, FidelityFX Xbox, libHttpClient.GDK, XCurl) resolve against Windows or PercyScarlett shims, down to every imported function.
-- Details: [docs/TheBig6.md](docs/TheBig6.md).
+| Profile | Speed (RTX 2060 SUPER 8 GB) | Notes |
+| :--- | :--- | :--- |
+| Series S (default) | about 2-3 fps | lit world, fits an 8 GB card |
+| Series X | about 1 fps | more VRAM, spills into system RAM on 8 GB cards |
+
+What changed in v1.0: the Series S world was black because the game upscales with the console build of AMD FSR 4, whose pipelines have no PC equivalent. The upscale is now a stretch of the colour image, so the lit picture reaches the screen. Next up: shaded areas and interiors (ray-traced lighting) and speed.
+
+Full guide, switches and known issues: [docs/PROLOGUE.md](docs/PROLOGUE.md). Older notes: [docs/TheBig6.md](docs/TheBig6.md).
 
 ---
 
@@ -74,6 +82,8 @@ PercyScarlett never decrypts, patches or bypasses licensing. Use decrypted dumps
 
 | Crate | Provides |
 | :--- | :--- |
+| `runtime/victory` | The runtime that runs TheBig6 😉: Xbox Series runtime, RDNA2 shader translator and D3D12 layer (based on VIctory and victory-fork), with the Series S upscale fix |
+| `PercyPort` | Earlier Rust layer: tiled page-pool VRAM aliasing, Series S overlay, watchdog handling |
 | `src/pe_loader.rs` | In-process PE32+ loader: relocations, `.pdata`, guest static TLS, IAT routing, file-system virtualization (`G:`/`T:`/user paths), crash logging with true unwinding |
 | `crates/d3d12_xs` | D3D12.X device/list/queue proxy, inline command-record replay, console presents into a DXGI swap chain, UMA buffer VRAM mirror, RDNA2 → DXIL shader lifter |
 | `crates/xgameruntime` | Runtime shim over the PC Gaming Runtime: offline XUser, persistent local storage, XGameSave, device association, networking hints |
@@ -100,6 +110,7 @@ Rust stable (x86_64-pc-windows-gnu), Windows 10/11 x64, Microsoft GDK for `wdapp
 
 ## Credits & licence
 
+- `runtime/victory` is built on [VIctory](https://github.com/Marvisak/VIctory) by Marvisak and contributors, [victory-fork](https://github.com/fxceless/victory-fork) by fxceless, and the Series S upscale fix from [ScarlettPort](https://github.com/zigzagboi1/scarlettport) by zigzagboi1. Full list in [CREDITS.md](CREDITS.md).
 - XCurl offline transfer logic ported from [OpenScarlett](https://github.com/californiaAlmonds/OpenScarlett) (MIT, © 2026 OpenScarlett Contributors).
 - AMD RDNA2 ISA opcode table from AMD's MIT-licensed machine-readable ISA.
 - Console bottom-of-pipe write and memory-wait handling ported from [xcl](https://github.com/ivall/xcl) (GPL-2.0).
