@@ -105,6 +105,9 @@ fn poll_xinput(s: &mut GameInputGamepadState) {
 fn down(vk: i32) -> bool {
     unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
 }
+fn pressed(vk: i32) -> bool {
+    unsafe { GetAsyncKeyState(vk) as u16 & 0x8001 != 0 }
+}
 fn focused() -> bool {
     unsafe {
         let mut pid = 0u32;
@@ -173,10 +176,12 @@ pub fn state() -> GameInputGamepadState {
         return s;
     }
     let axis = |neg: bool, pos: bool| (pos as i32 - neg as i32) as f32;
-    s.left_thumbstick_x = axis(down(b'A' as i32), down(b'D' as i32));
-    s.left_thumbstick_y = axis(down(b'S' as i32), down(b'W' as i32));
-    let mut rx = 0.0f32; // arrows are the d-pad (below); mouse looks
-    let mut ry = 0.0f32;
+    let lx_kb = axis(down(b'A' as i32), down(b'D' as i32));
+    let ly_kb = axis(down(b'S' as i32), down(b'W' as i32));
+    if lx_kb != 0.0 { s.left_thumbstick_x = lx_kb; }
+    if ly_kb != 0.0 { s.left_thumbstick_y = ly_kb; }
+    let mut rx = axis(down(b'J' as i32), down(b'L' as i32)); // IJKL right stick
+    let mut ry = axis(down(b'K' as i32), down(b'I' as i32));
     // mouse motion -> right stick (smoothed, by speed)
     let mut p = [0i32; 2];
     unsafe { GetCursorPos(&mut p) };
@@ -194,19 +199,25 @@ pub fn state() -> GameInputGamepadState {
     if ry == 0.0 && sy.abs() > 0.02 {
         ry = sy;
     }
-    s.right_thumbstick_x = rx.clamp(-1.0, 1.0);
-    s.right_thumbstick_y = ry.clamp(-1.0, 1.0);
-    s.left_trigger = down(0x02) as u32 as f32; // RMB
-    s.right_trigger = down(0x01) as u32 as f32; // LMB
-    let map: [(i32, u32); 21] = [
+    if rx != 0.0 { s.right_thumbstick_x = rx.clamp(-1.0, 1.0); }
+    if ry != 0.0 { s.right_thumbstick_y = ry.clamp(-1.0, 1.0); }
+    let lt_kb = down(0x02) as u32 as f32; // RMB
+    let rt_kb = down(0x01) as u32 as f32; // LMB
+    if lt_kb > s.left_trigger { s.left_trigger = lt_kb; }
+    if rt_kb > s.right_trigger { s.right_trigger = rt_kb; }
+    let map: [(i32, u32); 25] = [
         (0x1B, 0x1),          // Esc -> Menu
         (0x09, 0x2),          // Tab -> View
         (0x20, 0x4),          // Space -> A
         (0x0D, 0x4),          // Enter -> A
-        (b'Q' as i32, 0x8),   // B
+        (b'N' as i32, 0x4),   // N -> A (VBNM = YBAX)
+        (b'B' as i32, 0x8),   // B -> B
+        (b'Q' as i32, 0x8),   // Q -> B
         (0x08, 0x8),          // Backspace -> B
-        (b'R' as i32, 0x10),  // X
-        (b'E' as i32, 0x20),  // Y
+        (b'M' as i32, 0x10),  // M -> X
+        (b'R' as i32, 0x10),  // R -> X
+        (b'V' as i32, 0x20),  // V -> Y
+        (b'E' as i32, 0x20),  // E -> Y
         (b'1' as i32, 0x40),  // d-pad up
         (b'2' as i32, 0x80),  // down
         (b'3' as i32, 0x100), // left
@@ -222,8 +233,22 @@ pub fn state() -> GameInputGamepadState {
         (0x11, 0x1000),       // Ctrl -> left stick click
     ];
     for (vk, b) in map {
-        if down(vk) {
+        if pressed(vk) {
             s.buttons |= b;
+        }
+    }
+    // Latch any button press for 180ms so quick taps never get missed between slow frames.
+    static LATCH: std::sync::Mutex<(u64, u32)> = std::sync::Mutex::new((0, 0));
+    let now = now_us();
+    {
+        let mut l = LATCH.lock().unwrap();
+        if s.buttons != 0 {
+            l.0 = now;
+            l.1 |= s.buttons;
+        } else if l.1 != 0 && now.saturating_sub(l.0) < 180_000 {
+            s.buttons |= l.1;
+        } else {
+            l.1 = 0;
         }
     }
     s

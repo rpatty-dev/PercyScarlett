@@ -53,15 +53,35 @@ unsafe fn vt(o: usize, slot: usize) -> usize {
 }
 
 /// committed, writable (or readable for `write == false`) memory covering `[va, va + n)`
-fn usable(va: usize, n: usize, write: bool) -> bool {
+pub(crate) fn usable(va: usize, n: usize, write: bool) -> bool {
+    // Per-draw/per-timestamp VirtualQuery syscalls dominated frame time; cache committed regions per thread.
+    // shortcut: a region decommitted within 4096 lookups could be reported stale; flush on Unmap/Free if that ever crashes.
+    thread_local! { static RC: std::cell::RefCell<(u32, Vec<(usize, usize, u32)>)> = const { std::cell::RefCell::new((0, Vec::new())) }; }
+    let need = if write { 0x44 } else { 0x66 };
+    let end = va.saturating_add(n);
+    if va < 0x10000 {
+        return false;
+    }
+    let hit = RC.with(|c| {
+        let mut c = c.borrow_mut();
+        c.0 = c.0.wrapping_add(1);
+        if c.0 & 4095 == 0 { c.1.clear(); }
+        c.1.iter().any(|&(b, e, p)| va >= b && end <= e && p & need != 0)
+    });
+    if hit {
+        return true;
+    }
     let mut m = [0usize; 6];
-    if va < 0x10000 || unsafe { VirtualQuery(va as *const c_void, &mut m, 48) } == 0 {
+    if unsafe { VirtualQuery(va as *const c_void, &mut m, 48) } == 0 {
         return false;
     }
     // MEMORY_BASIC_INFORMATION: BaseAddress @0, RegionSize @0x18, State @0x20, Protect @0x24
     let (state, prot) = (m[4] as u32, (m[4] >> 32) as u32);
-    let ok = if write { prot & 0x44 != 0 } else { prot & 0x66 != 0 };
-    state == 0x1000 && ok && m[0] + m[3] >= va + n
+    if state != 0x1000 {
+        return false;
+    }
+    RC.with(|c| { let mut c = c.borrow_mut(); if c.1.len() >= 16 { c.1.remove(0); } c.1.push((m[0], m[0] + m[3], prot)); });
+    prot & need != 0 && m[0] + m[3] >= end
 }
 
 fn now_ns() -> u64 {

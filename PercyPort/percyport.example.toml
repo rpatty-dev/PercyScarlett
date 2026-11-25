@@ -1,0 +1,19 @@
+# Copy to `percyport.toml` (git-ignored) and point it at YOUR files.
+# Every path must be OUTSIDE the repository; the tools refuse otherwise.
+# Environment variables (shown below) take precedence over this file.
+# PERCYPORT_CONFIG selects a different config file.
+
+[paths]
+# Your own dump of Grand Theft Auto VI.     env: PERCYPORT_GAME_DIR
+game_dir = 'D:\percyport-data\game'
+
+# Derived data. Default: %LOCALAPPDATA%\percyport\cache.   env: PERCYPORT_CACHE_DIR
+# cache_dir = 'D:\percyport-data\cache'
+
+# What titles save (persistent local storage), kept apart from the cache.
+# Default: %LOCALAPPDATA%\percyport\data.   env: PERCYPORT_DATA_DIR
+# data_dir = 'D:\percyport-data\data'
+
+# Other Xbox Series titles used to test platform-level code.
+# env: PERCYPORT_TEST_TITLES (separated by ';')
+test_titles = []

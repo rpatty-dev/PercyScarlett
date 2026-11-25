@@ -1,3 +1,5 @@
+mod bcpack;
+
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -141,6 +143,7 @@ struct ComFile {
     refs: AtomicU32,
     path: PathBuf,
     size: u64,
+    file: File,
 }
 
 #[repr(C)]
@@ -226,7 +229,11 @@ unsafe extern "system" fn factory_open_file(
     let s = String::from_utf16_lossy(std::slice::from_raw_parts(path_w, len));
     let p = resolve_vfs_path(&s);
     eprintln!("[dstorage] OpenFile {s} -> {}", p.display());
-    let Ok(meta) = std::fs::metadata(&p) else {
+    let Ok(file) = File::open(&p) else {
+        *out_file = std::ptr::null_mut();
+        return E_FAIL;
+    };
+    let Ok(meta) = file.metadata() else {
         *out_file = std::ptr::null_mut();
         return E_FAIL;
     };
@@ -235,6 +242,7 @@ unsafe extern "system" fn factory_open_file(
         refs: AtomicU32::new(1),
         path: p,
         size: meta.len(),
+        file,
     });
     *out_file = Box::into_raw(f) as *mut c_void;
     S_OK
@@ -363,6 +371,19 @@ unsafe extern "system" fn queue_enqueue_req(_this: *mut c_void, req: *const DSto
     let data: Vec<u8> = if is_file {
         let cf = &*(src as *const ComFile);
         let mut buf = vec![0u8; ssz];
+        #[cfg(windows)]
+        let ok = {
+            use std::os::windows::fs::FileExt;
+            let mut got = 0usize;
+            while got < ssz {
+                match cf.file.seek_read(&mut buf[got..], off + got as u64) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got += n,
+                }
+            }
+            got == ssz
+        };
+        #[cfg(not(windows))]
         let ok = File::open(&cf.path).map(|mut f| f.seek(SeekFrom::Start(off)).is_ok() && f.read_exact(&mut buf).is_ok()).unwrap_or(false);
         match ok {
             true => buf,
@@ -379,24 +400,46 @@ unsafe extern "system" fn queue_enqueue_req(_this: *mut c_void, req: *const DSto
         return;
     }
     let out = std::slice::from_raw_parts_mut(dst, dsz);
-    match opt & 0xff {
-        0 => {
-            let n = data.len().min(dsz);
-            out[..n].copy_from_slice(&data[..n]);
+    let zlib = (opt & 1) != 0;
+    let bc = ((opt >> 1) & 0xF) as u8;
+    let inflate_to = |src_b: &[u8], dst_b: &mut [u8]| -> Option<usize> {
+        let mut z = flate2::Decompress::new(true);
+        if z.decompress(src_b, dst_b, flate2::FlushDecompress::Finish).is_ok() {
+            return Some(z.total_out() as usize);
         }
-        1 => {
-            let mut z = flate2::Decompress::new(true);
-            if z.decompress(&data, out, flate2::FlushDecompress::Finish).is_err() {
-                let mut r = flate2::Decompress::new(false);
-                if r.decompress(&data, out, flate2::FlushDecompress::Finish).is_err() {
-                    eprintln!("[dstorage] inflate failed off={off:#x} size={ssz:#x}");
-                }
-            }
+        let mut r = flate2::Decompress::new(false);
+        if r.decompress(src_b, dst_b, flate2::FlushDecompress::Finish).is_ok() {
+            return Some(r.total_out() as usize);
         }
-        c => {
-            static UC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            if UC.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4 {
-                eprintln!("[dstorage] unsupported compression {c} (opt={opt:#x}) size={ssz:#x}->{dsz:#x}");
+        None
+    };
+    if !zlib && bc == 0 {
+        let n = data.len().min(dsz);
+        out[..n].copy_from_slice(&data[..n]);
+    } else if zlib && bc == 0 {
+        if inflate_to(&data, out).is_none() {
+            eprintln!("[dstorage] inflate failed off={off:#x} size={ssz:#x}");
+        }
+    } else {
+        static TABLES: std::sync::OnceLock<Result<bcpack::Tables, bcpack::Error>> = std::sync::OnceLock::new();
+        let Ok(tables) = TABLES.get_or_init(bcpack::Tables::builtin) else {
+            return;
+        };
+        let packed: std::borrow::Cow<[u8]> = if zlib {
+            let mut tmp = vec![0u8; dsz.max(ssz * 4)];
+            let Some(n) = inflate_to(&data, &mut tmp) else {
+                eprintln!("[dstorage] zlib+bcpack inflate failed off={off:#x} size={ssz:#x}");
+                return;
+            };
+            tmp.truncate(n);
+            std::borrow::Cow::Owned(tmp)
+        } else {
+            std::borrow::Cow::Borrowed(&data)
+        };
+        if let Err(e) = bcpack::decode(bc, &packed, out, tables) {
+            static BE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if BE.fetch_add(1, Ordering::Relaxed) < 8 {
+                eprintln!("[dstorage] bcpack(bc={bc}) failed: {e} (opt={opt:#x} {ssz:#x}->{dsz:#x})");
             }
         }
     }

@@ -31,6 +31,17 @@ unsafe extern "system" fn veh_handler(ep: *mut ExceptionPointers) -> i32 {
         return 0;
     }
     let rec = &*(*ep).record;
+    // Read/write into a MEM_RESERVE'd console pool page: commit it zeroed and retry.
+    // shortcut: masks reads of pages the title expected mapped with data; upgrade to tracking XMemMapPhysicalPages ranges.
+    if rec.code == 0xC000_0005 && rec.num_params >= 2 && rec.info[0] != 8 && rec.info[1] >= 0x10000 {
+        let mut mbi = [0usize; 6]; // MEMORY_BASIC_INFORMATION (48 bytes)
+        if VirtualQuery(rec.info[1] as *const c_void, mbi.as_mut_ptr() as *mut c_void, 48) == 48
+            && (mbi[4] & 0xFFFF_FFFF) == 0x2000
+            && !VirtualAlloc((rec.info[1] & !0xFFFF) as *mut c_void, 0x10000, 0x1000, 0x04).is_null()
+        {
+            return -1; // EXCEPTION_CONTINUE_EXECUTION
+        }
+    }
     // Log fatal hardware faults; ignore SetThreadName (0x406D1388) and C++ EH (0xE06D7363).
     if matches!(rec.code, 0xC000_0005 | 0xC000_001D | 0xC000_0094 | 0xC000_00FD) {
         let log_path = std::env::var("PERCY_CRASH_LOG").unwrap_or_else(|_| "percy_crash.log".into());
@@ -62,7 +73,7 @@ unsafe extern "system" fn veh_handler(ep: *mut ExceptionPointers) -> i32 {
 fn ensure_veh_installed() {
     #[cfg(windows)]
     VEH_INIT.call_once(|| unsafe {
-        AddVectoredExceptionHandler(0, veh_handler);
+        AddVectoredExceptionHandler(1, veh_handler);
     });
 }
 
@@ -89,6 +100,7 @@ pub struct XMemWorkingSetStats {
 extern "system" {
     fn VirtualAlloc(addr: *mut c_void, size: usize, alloc_type: u32, protect: u32) -> *mut c_void;
     fn VirtualFree(addr: *mut c_void, size: usize, free_type: u32) -> i32;
+    fn VirtualQuery(addr: *const c_void, buf: *mut c_void, len: usize) -> usize;
     fn GetModuleHandleA(name: *const u8) -> usize;
     fn GetProcAddress(m: usize, name: *const u8) -> usize;
 }

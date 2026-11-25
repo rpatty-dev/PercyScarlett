@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.0.0 — 2026-11-25
+
+TheBig6 😉 reaches its opening prison scene: the yard, lit and textured, on the Series S profile with an 8 GB NVIDIA card. Start with [docs/PROLOGUE.md](docs/PROLOGUE.md).
+
+### New
+- `runtime/victory`: the runtime that reaches the scene, based on VIctory and fxceless' victory-fork, with our changes and community work on top (see [CREDITS.md](CREDITS.md)).
+- `scripts/play-prologue.ps1`: builds the runtime, fetches the D3D12 Agility SDK and runs your dump with settings that fit an 8 GB card.
+- Series S black world fixed: the console FSR 4 upscale is replaced by a stretch of the colour image (thanks to ScarlettPort).
+- Series S overlay plane blended over the game plane, with the full console plane description.
+- The game's own stall watchdog is held so slow first-run pipeline builds do not end the game (`VICTORY_WATCHDOG=0` turns this off).
+- DirectStorage failures name the file; `VICTORY_PIPELINE_WORKERS` sets the pipeline build threads.
+- Diagnostics: frame listings show each texture's memory and its other mapped views; serialized console pipelines can be dumped (`VICTORY_DESER_DUMP`).
+- PercyPort layer: DirectStorage BCPack tables, XMem, D3D12.X CPU write tracking and PSO fixes, virtual pad updates.
+
+### Known issues
+- Shaded areas and interiors are too dark (ray-traced lighting off; wave64 shaders unsupported on NVIDIA).
+- About 2-3 fps on the Series S profile, about 1 fps on Series X.
+
 ## v0.9.0 — 2026-11-23
 
 First retail Scarlett title running: Minecraft (Xbox Series X|S build) reaches the main menu and plays in-world. Pipeline ready for TheBig6 😉.

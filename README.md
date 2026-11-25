@@ -11,9 +11,15 @@
   <a href="https://github.com/sponsors/rpatty-dev"><strong>♥ Sponsor</strong></a>
 </p>
 
-Clean-room Rust translation layer that runs unencrypted Xbox Series X|S (Scarlett) GDK titles natively on Windows 10/11 x64. The title's x86-64 code runs as-is; PercyScarlett maps it in-process and supplies the console-only pieces: D3D12.X, XMem, the Xbox runtime, input, audio hardware, storage and networking.
+Rust translation layer that runs unencrypted Xbox Series X|S (Scarlett) GDK titles natively on Windows 10/11 x64. The title's x86-64 code runs as-is; PercyScarlett maps it in-process and supplies the console-only pieces: D3D12.X, XMem, the Xbox runtime, input, audio hardware, storage and networking.
 
-**v0.9: a retail Scarlett title reaches the main menu and plays in-world, and the pipeline is ready for TheBig6 😉.**
+**v1.0: TheBig6 😉 reaches its opening prison scene, lit and textured, on an 8 GB card. Start here: [docs/PROLOGUE.md](docs/PROLOGUE.md).**
+
+```powershell
+.\scripts\play-prologue.ps1 -Game "D:\path\to\your\dump"
+```
+
+The runtime in `runtime/victory` is built on VIctory, fxceless' victory-fork and ScarlettPort: see [CREDITS.md](CREDITS.md).
 
 ---
 

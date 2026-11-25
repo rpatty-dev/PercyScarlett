@@ -309,15 +309,7 @@ pub(crate) unsafe fn cpu_readable(addr: u64, len: usize) -> bool {
     if addr < 0x10000 || len == 0 {
         return false;
     }
-    #[repr(C)]
-    struct Mbi { base: usize, alloc_base: usize, alloc_prot: u32, part: u16, size: usize, state: u32, prot: u32, ty: u32 }
-    extern "system" { fn VirtualQuery(p: usize, m: *mut Mbi, n: usize) -> usize; }
-    let mut m: Mbi = std::mem::zeroed();
-    if VirtualQuery(addr as usize, &mut m, std::mem::size_of::<Mbi>()) == 0 || m.state != 0x1000 {
-        return false;
-    }
-    let end = m.base.saturating_add(m.size);
-    (addr as usize).saturating_add(len) <= end && (m.prot & 0x66) != 0
+    super::cpu_writes::usable(addr as usize, len, false)
 }
 
 /// Copies `copy_len` bytes from CPU-readable `src_va` into the upload ring and returns
