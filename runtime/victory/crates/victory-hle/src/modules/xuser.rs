@@ -155,8 +155,9 @@ extern "system" fn get_state(_: This, _: Handle, out: *mut u32) -> HRESULT {
     put(out, 0)
 }
 /// The user's gamertag as the component asked for (`XUserGamertagComponent`):
-/// it has no suffix, so the modern suffix is empty and every other component
-/// (classic, modern, unique modern) is the name itself.
+/// it has no suffix, so the modern suffix is empty and the classic, modern and
+/// unique modern components are the name itself. Unknown components are
+/// invalid.
 extern "system" fn get_gamertag(
     _: This,
     _: Handle,
@@ -167,8 +168,9 @@ extern "system" fn get_gamertag(
 ) -> HRESULT {
     const MODERN_SUFFIX: u32 = 2;
     let text = match component {
+        0 | 1 | 3 => GAMERTAG,
         MODERN_SUFFIX => "",
-        _ => GAMERTAG,
+        _ => return xasync::E_INVALIDARG,
     };
     put_string(text, size, buffer, used)
 }
@@ -345,6 +347,23 @@ mod tests {
                 assert_eq!(hr, S_OK);
                 assert_eq!(&name[..used], expected, "component {component}");
             }
+        }
+    }
+
+    #[test]
+    fn an_unknown_gamertag_component_is_an_invalid_argument() {
+        type Gamertag =
+            extern "system" fn(This, Handle, u32, usize, *mut u8, *mut usize) -> HRESULT;
+        let this: This = &OBJECT;
+        let user = std::ptr::null();
+        for (object, at) in [(&GAMERTAG_OBJECT, 0x18), (&OBJECT, 0x78)] {
+            let get = slot::<Gamertag>(object, at);
+            let (mut name, mut used) = ([0xAA_u8; 16], 0);
+            assert_eq!(
+                get(this, user, 4, 16, name.as_mut_ptr(), &mut used),
+                xasync::E_INVALIDARG
+            );
+            assert_eq!(name, [0xAA_u8; 16], "buffer untouched");
         }
     }
 
