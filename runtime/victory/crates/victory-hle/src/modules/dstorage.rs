@@ -50,6 +50,11 @@ type Out = *mut *mut c_void;
 static FACTORY_OBJECT: Object = Object::new("dstorage factory", &FACTORY_VTABLE);
 
 pub extern "system" fn DStorageGetFactory(iid: *const Guid, out: Out) -> HRESULT {
+    if out.is_null() {
+        return E_INVALIDARG;
+    }
+    // SAFETY: checked non-null; the title passes room for a pointer.
+    unsafe { out.write(std::ptr::null_mut()) };
     // SAFETY: the title passes a GUID (null tolerated).
     match unsafe { iid.as_ref() } {
         Some(&iid) if iid == FACTORY => {
@@ -118,6 +123,11 @@ extern "system" fn open_file(_: Factory, path: *const u16, iid: *const Guid, out
     const GENERIC_READ: u32 = 0x8000_0000;
     const FILE_SHARE_READ: u32 = 1;
     const OPEN_EXISTING: u32 = 3;
+    if out.is_null() {
+        return E_INVALIDARG;
+    }
+    // SAFETY: checked non-null; the title passes room for a pointer.
+    unsafe { out.write(std::ptr::null_mut()) };
     if path.is_null() {
         return E_INVALIDARG;
     }
@@ -158,6 +168,11 @@ extern "system" fn create_status_array(
     iid: *const Guid,
     out: Out,
 ) -> HRESULT {
+    if out.is_null() {
+        return E_INVALIDARG;
+    }
+    // SAFETY: checked non-null; the title passes room for a pointer.
+    unsafe { out.write(std::ptr::null_mut()) };
     tracing::info!(
         capacity,
         name = text(name),
@@ -189,6 +204,11 @@ extern "system" fn create_queue(
     iid: *const Guid,
     out: Out,
 ) -> HRESULT {
+    if out.is_null() {
+        return E_INVALIDARG;
+    }
+    // SAFETY: checked non-null; the title passes room for a pointer.
+    unsafe { out.write(std::ptr::null_mut()) };
     // SAFETY: the title passes its description (null tolerated).
     let Some(desc) = (unsafe { desc.as_ref() }) else {
         return E_INVALIDARG;
@@ -1199,6 +1219,48 @@ mod tests {
         let mut factory = std::ptr::null_mut();
         assert_eq!(DStorageGetFactory(&FACTORY, &mut factory), S_OK);
         factory
+    }
+
+    #[test]
+    fn a_refused_factory_interface_clears_the_out_pointer() {
+        // `_COM_Outptr_`: *ppv is null on failure, not the caller's stale value.
+        let unknown = Guid::new(0, 0, 0, [0; 8]);
+        let mut out = 0x1234 as *mut c_void;
+        assert_eq!(DStorageGetFactory(&unknown, &mut out), E_NOINTERFACE);
+        assert!(out.is_null());
+
+        let mut out = 0x1234 as *mut c_void;
+        assert_eq!(
+            DStorageGetFactory(std::ptr::null(), &mut out),
+            E_NOINTERFACE
+        );
+        assert!(out.is_null());
+
+        assert_eq!(
+            DStorageGetFactory(&FACTORY, std::ptr::null_mut()),
+            E_INVALIDARG
+        );
+    }
+
+    #[test]
+    fn a_failed_file_or_queue_creation_clears_the_out_pointer() {
+        let open: extern "system" fn(*mut c_void, *const u16, *const Guid, Out) -> HRESULT =
+            call(factory(), 0x20);
+        let mut file = 0x1234 as *mut c_void;
+        assert_eq!(
+            open(factory(), std::ptr::null(), std::ptr::null(), &mut file),
+            E_INVALIDARG
+        );
+        assert!(file.is_null());
+
+        let create: extern "system" fn(*mut c_void, *const QueueDesc, *const Guid, Out) -> HRESULT =
+            call(factory(), 0x50);
+        let mut queue = 0x1234 as *mut c_void;
+        assert_eq!(
+            create(factory(), std::ptr::null(), std::ptr::null(), &mut queue),
+            E_INVALIDARG
+        );
+        assert!(queue.is_null());
     }
 
     fn open(path: &std::path::Path) -> *mut c_void {
